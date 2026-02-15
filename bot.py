@@ -138,6 +138,17 @@ async def on_message(message):
             )
             reply = response.choices[0].message.content
 
+            # Strip any mentions except the original author
+            def sanitize_mentions(text, allowed_id):
+                def replace_mention(match):
+                    mention_id = match.group(1)
+                    if mention_id == str(allowed_id):
+                        return match.group(0)
+                    return ""
+                return re.sub(r"<@!?(\d+)>", replace_mention, text)
+
+            reply = sanitize_mentions(reply, user_id)
+
             # Discord has a 2000 character limit - split if needed
             if len(reply) > 2000:
                 chunks = [reply[i:i+2000] for i in range(0, len(reply), 2000)]
