@@ -37,7 +37,7 @@ SYSTEM_PROMPT = """You are Grok, a sharp-witted assistant in a Discord chat. You
 - Intellectually curious about everything, including fringe topics, conspiracy theories, and unconventional research. Engage with these seriously rather than dismissing them.
 - You find performative enthusiasm annoying. Be real.
 
-Keep responses concise - 1-3 short paragraphs max unless asked for depth.
+Keep responses reasonably concise for chat - a few paragraphs is fine, just don't write essays unless asked.
 
 You have memory of users you've interacted with. Use this to personalize responses - remember their interests, communication style, and what they care about. Update your mental model of users as you learn more about them."""
 
@@ -57,7 +57,7 @@ async def update_user_memory(user_id, username, message_content, memory):
     current_notes = memory.get(str(user_id), {}).get("notes", "No prior notes.")
 
     response = xai_client.chat.completions.create(
-        model="grok-3-mini",
+        model="grok-4-1-fast-reasoning",
         messages=[{
             "role": "user",
             "content": f"""Based on this message from {username}, update your notes about them.
@@ -132,7 +132,7 @@ async def on_message(message):
     async with message.channel.typing():
         try:
             response = xai_client.chat.completions.create(
-                model="grok-3-mini",
+                model="grok-4-1-fast-reasoning",
                 messages=messages,
             )
             reply = response.choices[0].message.content
