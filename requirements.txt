@@ -2,3 +2,4 @@ discord.py>=2.0
 openai>=1.0
 thefuzz>=0.22
 chromadb>=0.4
+aiohttp>=3.9

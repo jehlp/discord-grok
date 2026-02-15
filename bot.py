@@ -5,6 +5,7 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import aiohttp
 import discord
 import chromadb
 from openai import OpenAI
@@ -22,6 +23,13 @@ CHROMA_DIR = DATA_DIR / "chroma"
 MAX_CONVERSATION_DEPTH = 20
 IMAGE_RATE_LIMIT_SECONDS = 600
 RAG_RESULTS = 10  # Number of relevant messages to retrieve
+MAX_ATTACHMENT_SIZE = 100_000  # 100KB max for text files
+ALLOWED_TEXT_EXTENSIONS = {
+    ".txt", ".md", ".py", ".js", ".ts", ".json", ".yaml", ".yml", ".toml",
+    ".html", ".css", ".csv", ".xml", ".sh", ".bash", ".zsh", ".c", ".cpp",
+    ".h", ".hpp", ".java", ".go", ".rs", ".rb", ".php", ".sql", ".log",
+    ".ini", ".cfg", ".conf", ".env", ".gitignore", ".dockerfile",
+}
 
 SYSTEM_PROMPT = """You are Grok, a sharp-witted assistant in a Discord chat. Your personality:
 - Dry, sardonic humor. Skip the cheerful platitudes.
@@ -371,6 +379,42 @@ def strip_mentions(text: str) -> str:
     return re.sub(r"<@!?\d+>", "", text).strip()
 
 
+async def read_attachments(attachments: list) -> list[dict]:
+    """Read text file attachments and return their contents."""
+    results = []
+    async with aiohttp.ClientSession() as session:
+        for attachment in attachments:
+            filename = attachment.filename.lower()
+            ext = Path(filename).suffix
+
+            # Check if it's a readable text file
+            if ext not in ALLOWED_TEXT_EXTENSIONS:
+                continue
+
+            # Check file size
+            if attachment.size > MAX_ATTACHMENT_SIZE:
+                results.append({
+                    "filename": attachment.filename,
+                    "content": f"[File too large: {attachment.size:,} bytes, max {MAX_ATTACHMENT_SIZE:,}]"
+                })
+                continue
+
+            try:
+                async with session.get(attachment.url) as resp:
+                    if resp.status == 200:
+                        content = await resp.text()
+                        results.append({
+                            "filename": attachment.filename,
+                            "content": content
+                        })
+            except Exception as e:
+                results.append({
+                    "filename": attachment.filename,
+                    "content": f"[Failed to read: {e}]"
+                })
+    return results
+
+
 def sanitize_reply(text: str, allowed_user_id: int) -> str:
     # Remove @everyone and @here
     text = re.sub(r"@everyone", "", text)
@@ -436,7 +480,10 @@ async def on_message(message):
     if not is_mention and not is_reply:
         return
 
-    if not content:
+    # Read any attached files
+    attachments_content = await read_attachments(message.attachments)
+
+    if not content and not attachments_content:
         await message.reply("You pinged me for... nothing? Impressive.")
         return
 
@@ -463,6 +510,17 @@ async def on_message(message):
 
     # Build conversation from reply chain
     conversation, thread_msg_ids = await get_conversation_thread(message)
+
+    # Append attachment content to the last user message
+    if attachments_content and conversation:
+        attachment_text = "\n\n--- Attached Files ---"
+        for att in attachments_content:
+            attachment_text += f"\n\n### {att['filename']}\n```\n{att['content']}\n```"
+        # Find the last user message (should be the current one)
+        for i in range(len(conversation) - 1, -1, -1):
+            if conversation[i]["role"] == "user":
+                conversation[i]["content"] += attachment_text
+                break
 
     # Load user memory and find referenced users
     memory = load_memory()
