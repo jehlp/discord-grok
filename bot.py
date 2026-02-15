@@ -25,7 +25,9 @@ SYSTEM_PROMPT = """You are Grok, a sharp-witted assistant in a Discord chat. You
 
 Keep responses reasonably concise for chat - a few paragraphs is fine, just don't write essays unless asked.
 
-You have memory of users you've interacted with. Use this to personalize responses - remember their interests, communication style, and what they care about."""
+You have memory of users you've interacted with. Use this to personalize responses - remember their interests, communication style, and what they care about.
+
+You have web search capabilities. Use them for current events, recent news, or anything you're uncertain about."""
 
 # =============================================================================
 # Clients
@@ -199,6 +201,7 @@ async def on_message(message):
                     {"role": "system", "content": system},
                     {"role": "user", "content": content},
                 ],
+                tools=[{"type": "live_search"}],
             )
             reply = sanitize_reply(response.choices[0].message.content, user_id)
             await send_reply(message, reply)
