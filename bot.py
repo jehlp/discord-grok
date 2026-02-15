@@ -1,6 +1,7 @@
 import os
 import json
 import re
+import asyncio
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -144,7 +145,8 @@ def find_referenced_users(text: str, memory: dict, exclude_user_id: int = None) 
 async def update_user_notes(user_id: int, username: str, message: str, memory: dict):
     current = memory.get(str(user_id), {}).get("notes", "No prior notes.")
 
-    response = xai.chat.completions.create(
+    response = await asyncio.to_thread(
+        xai.chat.completions.create,
         model=MODEL,
         messages=[{
             "role": "user",
@@ -238,14 +240,17 @@ def get_response_text(response) -> str:
     return ""
 
 
-def query_chat(messages: list[dict]) -> str:
-    response = xai.chat.completions.create(model=MODEL, messages=messages)
+async def query_chat(messages: list[dict]) -> str:
+    response = await asyncio.to_thread(
+        xai.chat.completions.create, model=MODEL, messages=messages
+    )
     return response.choices[0].message.content
 
 
-def query_with_search(messages: list[dict]) -> str:
+async def query_with_search(messages: list[dict]) -> str:
     input_msgs = [{"role": m["role"], "content": m["content"]} for m in messages]
-    response = xai.responses.create(
+    response = await asyncio.to_thread(
+        xai.responses.create,
         model=MODEL,
         input=input_msgs,
         tools=[{"type": "web_search"}],
@@ -253,8 +258,10 @@ def query_with_search(messages: list[dict]) -> str:
     return get_response_text(response)
 
 
-def generate_image(prompt: str) -> str:
-    response = xai.images.generate(model=IMAGE_MODEL, prompt=prompt)
+async def generate_image(prompt: str) -> str:
+    response = await asyncio.to_thread(
+        xai.images.generate, model=IMAGE_MODEL, prompt=prompt
+    )
     return response.data[0].url
 
 
@@ -391,7 +398,7 @@ async def on_message(message):
 
         async with message.channel.typing():
             try:
-                image_url = generate_image(content)
+                image_url = await generate_image(content)
                 await message.reply(image_url)
                 record_image_request(user_id)
             except Exception as e:
@@ -435,11 +442,11 @@ async def on_message(message):
             use_search = needs_web_search(content)
 
             if use_search:
-                reply = query_with_search(messages)
+                reply = await query_with_search(messages)
             else:
-                reply = query_chat(messages)
+                reply = await query_chat(messages)
                 if response_is_uncertain(reply):
-                    reply = query_with_search(messages)
+                    reply = await query_with_search(messages)
 
             reply = sanitize_reply(reply, user_id)
             await send_reply(message, reply)
