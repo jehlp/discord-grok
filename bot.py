@@ -12,7 +12,7 @@ from openai import OpenAI
 # =============================================================================
 
 MODEL = "grok-4-1-fast-reasoning"
-DATA_DIR = Path("/app/data")
+DATA_DIR = Path(os.environ.get("DATA_DIR", "/app/data"))
 MEMORY_FILE = DATA_DIR / "user_memory.json"
 
 SYSTEM_PROMPT = """You are Grok, a sharp-witted assistant in a Discord chat. Your personality:
