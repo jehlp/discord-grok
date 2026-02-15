@@ -106,12 +106,14 @@ async def on_message(message):
     username = message.author.display_name
     user_context = get_user_context(user_id, memory)
 
-    # Fetch last ~10 non-bot messages for context
+    # Fetch recent messages from the same user only (last 5 minutes)
+    from datetime import datetime, timedelta, timezone
     context_messages = []
+    cutoff_time = datetime.now(timezone.utc) - timedelta(minutes=5)
     async for msg in message.channel.history(limit=20, before=message):
-        if msg.author != client.user:
+        if msg.author == message.author and msg.created_at > cutoff_time:
             context_messages.append(msg)
-            if len(context_messages) >= 10:
+            if len(context_messages) >= 5:
                 break
     context_messages.reverse()
 
@@ -120,14 +122,19 @@ async def on_message(message):
     if user_context:
         system += f"\n\nWhat you know about {username}: {user_context}"
 
-    # Build messages array with context
-    messages = [{"role": "system", "content": system}]
-    for msg in context_messages:
-        messages.append({
-            "role": "user",
-            "content": f"{msg.author.display_name}: {strip_mentions(msg.content)}"
-        })
-    messages.append({"role": "user", "content": f"{username}: {content}"})
+    # Add recent chat context if available
+    if context_messages:
+        chat_log = "\n".join(
+            f"[{msg.author.display_name}]: {strip_mentions(msg.content)}"
+            for msg in context_messages
+        )
+        system += f"\n\n{username}'s recent messages (for context):\n{chat_log}"
+
+    # Build messages array - just the actual question
+    messages = [
+        {"role": "system", "content": system},
+        {"role": "user", "content": content}
+    ]
 
     # Show typing indicator while processing
     async with message.channel.typing():
