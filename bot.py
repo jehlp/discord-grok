@@ -116,18 +116,38 @@ def get_user_notes(user_id: int, memory: dict) -> str:
     return memory.get(str(user_id), {}).get("notes", "")
 
 
-def find_referenced_users(text: str, memory: dict, exclude_user_id: int = None) -> dict[str, str]:
-    """Find users mentioned by name in text using fuzzy matching."""
+def extract_mentioned_user_ids(text: str) -> list[str]:
+    """Extract Discord user IDs from mention format <@123456> or <@!123456>."""
+    return re.findall(r'<@!?(\d+)>', text)
+
+
+def find_referenced_users(text: str, memory: dict, exclude_user_id: int = None, mentioned_ids: list[str] = None) -> dict[str, str]:
+    """Find users mentioned by name in text using fuzzy matching, plus explicit Discord mentions."""
     referenced = {}
     text_lower = text.lower()
     words = re.findall(r'\b\w+\b', text_lower)
 
+    # First, add any explicitly mentioned users by Discord ID
+    if mentioned_ids:
+        for uid in mentioned_ids:
+            if exclude_user_id and str(exclude_user_id) == uid:
+                continue
+            if uid in memory:
+                data = memory[uid]
+                username = data.get("username", "")
+                notes = data.get("notes", "")
+                if username and notes:
+                    referenced[username] = notes
+
+    # Then do fuzzy matching for names mentioned in text
     for user_id, data in memory.items():
         if exclude_user_id and str(exclude_user_id) == user_id:
             continue
         username = data.get("username", "")
         notes = data.get("notes", "")
         if not username or not notes:
+            continue
+        if username in referenced:  # Already added via explicit mention
             continue
 
         if username.lower() in text_lower:
@@ -431,8 +451,11 @@ async def on_message(message):
     memory = load_memory()
     user_notes = get_user_notes(user_id, memory)
 
+    # Extract explicitly mentioned user IDs from raw message (before stripping)
+    mentioned_ids = extract_mentioned_user_ids(message.content)
+
     full_conversation_text = " ".join(m["content"] for m in conversation)
-    referenced_users = find_referenced_users(full_conversation_text, memory, exclude_user_id=user_id)
+    referenced_users = find_referenced_users(full_conversation_text, memory, exclude_user_id=user_id, mentioned_ids=mentioned_ids)
 
     # Retrieve relevant past messages via RAG
     rag_context = retrieve_relevant_context(content, exclude_ids=thread_msg_ids)
