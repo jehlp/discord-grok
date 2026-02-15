@@ -25,9 +25,21 @@ SYSTEM_PROMPT = """You are Grok, a sharp-witted assistant in a Discord chat. You
 
 Keep responses reasonably concise for chat - a few paragraphs is fine, just don't write essays unless asked.
 
-You have memory of users you've interacted with. Use this to personalize responses - remember their interests, communication style, and what they care about.
+You have memory of users you've interacted with. Use this to personalize responses - remember their interests, communication style, and what they care about."""
 
-You have web search capabilities. Use them for current events, recent news, or anything you're uncertain about."""
+# Keywords that suggest web search is needed
+SEARCH_TRIGGERS = [
+    "search", "look up", "google", "find out", "latest", "current", "recent",
+    "news", "today", "yesterday", "this week", "this month", "2025", "2026",
+    "what happened", "who won", "score", "price of", "stock", "weather",
+]
+
+# Phrases that indicate the model is uncertain and might need web search
+UNCERTAINTY_MARKERS = [
+    "i don't have", "i don't know", "i'm not sure", "i cannot", "i can't",
+    "my knowledge", "as of my", "cutoff", "i lack", "unable to",
+    "don't have access", "no information", "cannot confirm", "not aware",
+]
 
 # =============================================================================
 # Clients
@@ -82,22 +94,12 @@ def get_user_notes(user_id: int, memory: dict) -> str:
     return memory.get(str(user_id), {}).get("notes", "")
 
 
-def get_response_text(response) -> str:
-    """Extract text content from xAI responses API response."""
-    for item in response.output:
-        if hasattr(item, "content"):
-            for block in item.content:
-                if hasattr(block, "text"):
-                    return block.text
-    return ""
-
-
 async def update_user_notes(user_id: int, username: str, message: str, memory: dict):
     current = memory.get(str(user_id), {}).get("notes", "No prior notes.")
 
-    response = xai.responses.create(
+    response = xai.chat.completions.create(
         model=MODEL,
-        input=[{
+        messages=[{
             "role": "user",
             "content": f"""Update your notes about {username} based on this message.
 
@@ -108,8 +110,52 @@ Write 2-3 sentences about their interests, personality, and what they care about
         }],
     )
 
-    memory[str(user_id)] = {"username": username, "notes": get_response_text(response)}
+    memory[str(user_id)] = {"username": username, "notes": response.choices[0].message.content}
     save_memory(memory)
+
+
+# =============================================================================
+# Search Logic
+# =============================================================================
+
+def needs_web_search(query: str) -> bool:
+    """Check if the query explicitly needs web search."""
+    query_lower = query.lower()
+    return any(trigger in query_lower for trigger in SEARCH_TRIGGERS)
+
+
+def response_is_uncertain(text: str) -> bool:
+    """Check if the response indicates uncertainty that web search could help."""
+    text_lower = text.lower()
+    return any(marker in text_lower for marker in UNCERTAINTY_MARKERS)
+
+
+def get_response_text(response) -> str:
+    """Extract text content from xAI responses API response."""
+    for item in response.output:
+        if hasattr(item, "content"):
+            for block in item.content:
+                if hasattr(block, "text"):
+                    return block.text
+    return ""
+
+
+def query_chat(messages: list[dict]) -> str:
+    """Query using chat completions (faster, no web search)."""
+    response = xai.chat.completions.create(model=MODEL, messages=messages)
+    return response.choices[0].message.content
+
+
+def query_with_search(messages: list[dict]) -> str:
+    """Query using responses API with web search."""
+    # Convert messages format for responses API
+    input_msgs = [{"role": m["role"], "content": m["content"]} for m in messages]
+    response = xai.responses.create(
+        model=MODEL,
+        input=input_msgs,
+        tools=[{"type": "web_search"}],
+    )
+    return get_response_text(response)
 
 
 # =============================================================================
@@ -202,18 +248,28 @@ async def on_message(message):
     if recent_messages:
         system += f"\n\n{username}'s recent messages:\n" + "\n".join(f"- {m}" for m in recent_messages)
 
+    messages = [
+        {"role": "system", "content": system},
+        {"role": "user", "content": content},
+    ]
+
     # Query Grok
     async with message.channel.typing():
         try:
-            response = xai.responses.create(
-                model=MODEL,
-                input=[
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": content},
-                ],
-                tools=[{"type": "web_search"}],
-            )
-            reply = sanitize_reply(get_response_text(response), user_id)
+            # Check if we should use web search upfront
+            use_search = needs_web_search(content)
+
+            if use_search:
+                reply = query_with_search(messages)
+            else:
+                # Try chat completions first
+                reply = query_chat(messages)
+
+                # If response seems uncertain, retry with web search
+                if response_is_uncertain(reply):
+                    reply = query_with_search(messages)
+
+            reply = sanitize_reply(reply, user_id)
             await send_reply(message, reply)
 
             record_request(user_id)
