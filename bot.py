@@ -201,7 +201,7 @@ async def on_message(message):
                     {"role": "system", "content": system},
                     {"role": "user", "content": content},
                 ],
-                tools=[{"type": "live_search", "sources": "web,news,x"}],
+                tools=[{"type": "live_search", "sources": [{"type": "web"}, {"type": "news"}, {"type": "x"}]}],
             )
             reply = sanitize_reply(response.choices[0].message.content, user_id)
             await send_reply(message, reply)
