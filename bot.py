@@ -145,7 +145,7 @@ def find_referenced_users(text: str, memory: dict, exclude_user_id: int = None) 
 async def update_user_notes(user_id: int, username: str, message: str, memory: dict):
     current = memory.get(str(user_id), {}).get("notes", "No prior notes.")
 
-    response = await asyncio.to_thread(
+    response = await with_retry(
         xai.chat.completions.create,
         model=MODEL,
         messages=[{
@@ -213,6 +213,25 @@ def retrieve_relevant_context(query: str, exclude_ids: list[str] = None) -> list
 
 
 # =============================================================================
+# API Retry Logic
+# =============================================================================
+
+async def with_retry(func, *args, max_retries=3, **kwargs):
+    """Run a function with exponential backoff retry on 503 errors."""
+    for attempt in range(max_retries):
+        try:
+            return await asyncio.to_thread(func, *args, **kwargs)
+        except Exception as e:
+            if "503" in str(e) or "capacity" in str(e).lower():
+                if attempt < max_retries - 1:
+                    wait_time = (2 ** attempt) + 1  # 1s, 3s, 5s
+                    await asyncio.sleep(wait_time)
+                    continue
+            raise
+    raise Exception("Max retries exceeded")
+
+
+# =============================================================================
 # Search & Image Logic
 # =============================================================================
 
@@ -241,7 +260,7 @@ def get_response_text(response) -> str:
 
 
 async def query_chat(messages: list[dict]) -> str:
-    response = await asyncio.to_thread(
+    response = await with_retry(
         xai.chat.completions.create, model=MODEL, messages=messages
     )
     return response.choices[0].message.content
@@ -249,7 +268,7 @@ async def query_chat(messages: list[dict]) -> str:
 
 async def query_with_search(messages: list[dict]) -> str:
     input_msgs = [{"role": m["role"], "content": m["content"]} for m in messages]
-    response = await asyncio.to_thread(
+    response = await with_retry(
         xai.responses.create,
         model=MODEL,
         input=input_msgs,
@@ -259,7 +278,7 @@ async def query_with_search(messages: list[dict]) -> str:
 
 
 async def generate_image(prompt: str) -> str:
-    response = await asyncio.to_thread(
+    response = await with_retry(
         xai.images.generate, model=IMAGE_MODEL, prompt=prompt
     )
     return response.data[0].url
