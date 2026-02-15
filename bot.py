@@ -14,6 +14,7 @@ from openai import OpenAI
 MODEL = "grok-4-1-fast-reasoning"
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/app/data"))
 MEMORY_FILE = DATA_DIR / "user_memory.json"
+MAX_CONVERSATION_DEPTH = 20  # Max messages to traverse in a reply chain
 
 SYSTEM_PROMPT = """You are Grok, a sharp-witted assistant in a Discord chat. Your personality:
 - Dry, sardonic humor. Skip the cheerful platitudes.
@@ -133,6 +134,49 @@ def query_with_search(messages: list[dict]) -> str:
 
 
 # =============================================================================
+# Conversation Threading
+# =============================================================================
+
+async def get_conversation_thread(message) -> list[dict]:
+    """
+    Walk back through the reply chain to build conversation history.
+    Returns list of {"role": "user"|"assistant", "content": "..."} messages.
+    """
+    thread = []
+    current = message
+    depth = 0
+
+    while current and depth < MAX_CONVERSATION_DEPTH:
+        content = strip_mentions(current.content)
+        if content:
+            if current.author == bot.user:
+                thread.append({"role": "assistant", "content": content})
+            else:
+                thread.append({"role": "user", "content": content})
+
+        # Follow the reply chain
+        if current.reference and current.reference.message_id:
+            try:
+                current = await current.channel.fetch_message(current.reference.message_id)
+                depth += 1
+            except discord.NotFound:
+                break
+        else:
+            break
+
+    # Reverse to get chronological order
+    thread.reverse()
+    return thread
+
+
+def is_reply_to_bot(message) -> bool:
+    """Check if this message is a reply to one of the bot's messages."""
+    if not message.reference or not message.reference.resolved:
+        return False
+    return message.reference.resolved.author == bot.user
+
+
+# =============================================================================
 # Helpers
 # =============================================================================
 
@@ -145,20 +189,6 @@ def sanitize_reply(text: str, allowed_user_id: int) -> str:
     def replace(match):
         return match.group(0) if match.group(1) == str(allowed_user_id) else ""
     return re.sub(r"<@!?(\d+)>", replace, text)
-
-
-async def get_user_context_messages(channel, author, before_msg) -> list[str]:
-    """Get the user's recent messages (last 5 min) for context."""
-    cutoff = datetime.now(timezone.utc) - timedelta(minutes=5)
-    messages = []
-
-    async for msg in channel.history(limit=20, before=before_msg):
-        if msg.author == author and msg.created_at > cutoff:
-            messages.append(strip_mentions(msg.content))
-            if len(messages) >= 5:
-                break
-
-    return list(reversed(messages))
 
 
 async def send_reply(message, text: str):
@@ -190,13 +220,16 @@ async def on_message(message):
     if message.author == bot.user:
         return
 
-    # Only respond to mentions
-    if bot.user not in message.mentions:
-        return
-
     # Only respond in channels with "grok" in the name
     channel_name = getattr(message.channel, "name", "").lower()
     if "grok" not in channel_name:
+        return
+
+    # Respond to @mentions OR replies to bot's messages
+    is_mention = bot.user in message.mentions
+    is_reply = is_reply_to_bot(message)
+
+    if not is_mention and not is_reply:
         return
 
     content = strip_mentions(message.content)
@@ -207,21 +240,19 @@ async def on_message(message):
     user_id = message.author.id
     username = message.author.display_name
 
-    # Build context
+    # Build conversation context from reply chain
+    conversation = await get_conversation_thread(message)
+
+    # Build system prompt with user memory
     memory = load_memory()
     user_notes = get_user_notes(user_id, memory)
-    recent_messages = await get_user_context_messages(message.channel, message.author, message)
 
     system = SYSTEM_PROMPT
     if user_notes:
         system += f"\n\nWhat you know about {username}: {user_notes}"
-    if recent_messages:
-        system += f"\n\n{username}'s recent messages:\n" + "\n".join(f"- {m}" for m in recent_messages)
 
-    messages = [
-        {"role": "system", "content": system},
-        {"role": "user", "content": content},
-    ]
+    # Build messages array: system + conversation history
+    messages = [{"role": "system", "content": system}] + conversation
 
     # Query Grok
     async with message.channel.typing():
