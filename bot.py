@@ -82,12 +82,22 @@ def get_user_notes(user_id: int, memory: dict) -> str:
     return memory.get(str(user_id), {}).get("notes", "")
 
 
+def get_response_text(response) -> str:
+    """Extract text content from xAI responses API response."""
+    for item in response.output:
+        if hasattr(item, "content"):
+            for block in item.content:
+                if hasattr(block, "text"):
+                    return block.text
+    return ""
+
+
 async def update_user_notes(user_id: int, username: str, message: str, memory: dict):
     current = memory.get(str(user_id), {}).get("notes", "No prior notes.")
 
-    response = xai.chat.completions.create(
+    response = xai.responses.create(
         model=MODEL,
-        messages=[{
+        input=[{
             "role": "user",
             "content": f"""Update your notes about {username} based on this message.
 
@@ -98,7 +108,7 @@ Write 2-3 sentences about their interests, personality, and what they care about
         }],
     )
 
-    memory[str(user_id)] = {"username": username, "notes": response.choices[0].message.content}
+    memory[str(user_id)] = {"username": username, "notes": get_response_text(response)}
     save_memory(memory)
 
 
@@ -195,15 +205,15 @@ async def on_message(message):
     # Query Grok
     async with message.channel.typing():
         try:
-            response = xai.chat.completions.create(
+            response = xai.responses.create(
                 model=MODEL,
-                messages=[
+                input=[
                     {"role": "system", "content": system},
                     {"role": "user", "content": content},
                 ],
-                tools=[{"type": "live_search", "sources": [{"type": "web"}, {"type": "news"}, {"type": "x"}]}],
+                tools=[{"type": "web_search"}],
             )
-            reply = sanitize_reply(response.choices[0].message.content, user_id)
+            reply = sanitize_reply(get_response_text(response), user_id)
             await send_reply(message, reply)
 
             record_request(user_id)
