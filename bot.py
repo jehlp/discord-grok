@@ -14,7 +14,6 @@ from openai import OpenAI
 MODEL = "grok-4-1-fast-reasoning"
 DATA_DIR = Path("/app/data")
 MEMORY_FILE = DATA_DIR / "user_memory.json"
-RATE_LIMIT_SECONDS = 300  # 5 minutes
 
 SYSTEM_PROMPT = """You are Grok, a sharp-witted assistant in a Discord chat. Your personality:
 - Dry, sardonic humor. Skip the cheerful platitudes.
@@ -50,30 +49,6 @@ xai = OpenAI(api_key=os.environ["XAI_API_KEY"], base_url="https://api.x.ai/v1")
 intents = discord.Intents.default()
 intents.message_content = True
 bot = discord.Client(intents=intents)
-
-# =============================================================================
-# Rate Limiting (in-memory)
-# =============================================================================
-
-last_request: dict[int, datetime] = {}
-
-
-def is_rate_limited(user_id: int) -> bool:
-    if user_id not in last_request:
-        return False
-    elapsed = datetime.now(timezone.utc) - last_request[user_id]
-    return elapsed < timedelta(seconds=RATE_LIMIT_SECONDS)
-
-
-def get_cooldown_remaining(user_id: int) -> int:
-    elapsed = datetime.now(timezone.utc) - last_request[user_id]
-    remaining = timedelta(seconds=RATE_LIMIT_SECONDS) - elapsed
-    return max(0, int(remaining.total_seconds()))
-
-
-def record_request(user_id: int):
-    last_request[user_id] = datetime.now(timezone.utc)
-
 
 # =============================================================================
 # User Memory (persistent)
@@ -148,7 +123,6 @@ def query_chat(messages: list[dict]) -> str:
 
 def query_with_search(messages: list[dict]) -> str:
     """Query using responses API with web search."""
-    # Convert messages format for responses API
     input_msgs = [{"role": m["role"], "content": m["content"]} for m in messages]
     response = xai.responses.create(
         model=MODEL,
@@ -220,6 +194,11 @@ async def on_message(message):
     if bot.user not in message.mentions:
         return
 
+    # Only respond in channels with "grok" in the name
+    channel_name = getattr(message.channel, "name", "").lower()
+    if "grok" not in channel_name:
+        return
+
     content = strip_mentions(message.content)
     if not content:
         await message.reply("You pinged me for... nothing? Impressive.")
@@ -227,15 +206,6 @@ async def on_message(message):
 
     user_id = message.author.id
     username = message.author.display_name
-    channel_name = getattr(message.channel, "name", "").lower()
-
-    # Rate limit (skip if channel has "grok" in name)
-    if "grok" not in channel_name and is_rate_limited(user_id):
-        remaining = get_cooldown_remaining(user_id)
-        minutes = remaining // 60
-        seconds = remaining % 60
-        await message.reply(f"Slow down. Try again in {minutes}m {seconds}s.")
-        return
 
     # Build context
     memory = load_memory()
@@ -272,7 +242,6 @@ async def on_message(message):
             reply = sanitize_reply(reply, user_id)
             await send_reply(message, reply)
 
-            record_request(user_id)
             await update_user_notes(user_id, username, content, memory)
 
         except Exception as e:
