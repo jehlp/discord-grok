@@ -361,6 +361,12 @@ def strip_mentions(text: str) -> str:
 
 
 def sanitize_reply(text: str, allowed_user_id: int) -> str:
+    # Remove @everyone and @here
+    text = re.sub(r"@everyone", "", text)
+    text = re.sub(r"@here", "", text)
+    # Remove role pings <@&role_id>
+    text = re.sub(r"<@&\d+>", "", text)
+    # Only allow pinging the user who invoked the bot
     def replace(match):
         return match.group(0) if match.group(1) == str(allowed_user_id) else ""
     return re.sub(r"<@!?(\d+)>", replace, text)
