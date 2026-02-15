@@ -5,7 +5,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import discord
+import chromadb
 from openai import OpenAI
+from thefuzz import fuzz
 
 # =============================================================================
 # Configuration
@@ -15,8 +17,10 @@ MODEL = "grok-4-1-fast-reasoning"
 IMAGE_MODEL = "grok-imagine-image"
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/app/data"))
 MEMORY_FILE = DATA_DIR / "user_memory.json"
+CHROMA_DIR = DATA_DIR / "chroma"
 MAX_CONVERSATION_DEPTH = 20
-IMAGE_RATE_LIMIT_SECONDS = 600  # 10 minutes
+IMAGE_RATE_LIMIT_SECONDS = 600
+RAG_RESULTS = 10  # Number of relevant messages to retrieve
 
 SYSTEM_PROMPT = """You are Grok, a sharp-witted assistant in a Discord chat. Your personality:
 - Dry, sardonic humor. Skip the cheerful platitudes.
@@ -27,23 +31,20 @@ SYSTEM_PROMPT = """You are Grok, a sharp-witted assistant in a Discord chat. You
 
 Keep responses reasonably concise for chat - a few paragraphs is fine, just don't write essays unless asked.
 
-You have memory of users you've interacted with. Use this to personalize responses - remember their interests, communication style, and what they care about."""
+You have memory of users you've interacted with. You also have knowledge of past conversations in this server."""
 
-# Keywords that suggest web search is needed
 SEARCH_TRIGGERS = [
     "search", "look up", "google", "find out", "latest", "current", "recent",
     "news", "today", "yesterday", "this week", "this month", "2025", "2026",
     "what happened", "who won", "score", "price of", "stock", "weather",
 ]
 
-# Phrases that indicate the model is uncertain and might need web search
 UNCERTAINTY_MARKERS = [
     "i don't have", "i don't know", "i'm not sure", "i cannot", "i can't",
     "my knowledge", "as of my", "cutoff", "i lack", "unable to",
     "don't have access", "no information", "cannot confirm", "not aware",
 ]
 
-# Keywords that suggest image generation
 IMAGE_TRIGGERS = [
     "generate an image", "generate image", "create an image", "create image",
     "make an image", "make image", "draw", "picture of", "photo of",
@@ -59,7 +60,17 @@ xai = OpenAI(api_key=os.environ["XAI_API_KEY"], base_url="https://api.x.ai/v1")
 
 intents = discord.Intents.default()
 intents.message_content = True
+intents.messages = True
+intents.guilds = True
 bot = discord.Client(intents=intents)
+
+# ChromaDB setup
+CHROMA_DIR.mkdir(parents=True, exist_ok=True)
+chroma_client = chromadb.PersistentClient(path=str(CHROMA_DIR))
+message_collection = chroma_client.get_or_create_collection(
+    name="server_messages",
+    metadata={"hnsw:space": "cosine"}
+)
 
 # =============================================================================
 # Rate Limiting for Images (in-memory)
@@ -86,7 +97,7 @@ def record_image_request(user_id: int):
 
 
 # =============================================================================
-# User Memory (persistent)
+# User Memory (persistent JSON)
 # =============================================================================
 
 def load_memory() -> dict:
@@ -102,6 +113,32 @@ def save_memory(memory: dict):
 
 def get_user_notes(user_id: int, memory: dict) -> str:
     return memory.get(str(user_id), {}).get("notes", "")
+
+
+def find_referenced_users(text: str, memory: dict, exclude_user_id: int = None) -> dict[str, str]:
+    """Find users mentioned by name in text using fuzzy matching."""
+    referenced = {}
+    text_lower = text.lower()
+    words = re.findall(r'\b\w+\b', text_lower)
+
+    for user_id, data in memory.items():
+        if exclude_user_id and str(exclude_user_id) == user_id:
+            continue
+        username = data.get("username", "")
+        notes = data.get("notes", "")
+        if not username or not notes:
+            continue
+
+        if username.lower() in text_lower:
+            referenced[username] = notes
+            continue
+
+        for word in words:
+            if len(word) >= 3 and fuzz.ratio(username.lower(), word) >= 80:
+                referenced[username] = notes
+                break
+
+    return referenced
 
 
 async def update_user_notes(user_id: int, username: str, message: str, memory: dict):
@@ -125,6 +162,55 @@ Write 2-3 sentences about their interests, personality, and what they care about
 
 
 # =============================================================================
+# Message Store (ChromaDB)
+# =============================================================================
+
+def store_message(message_id: str, content: str, author: str, channel: str, timestamp: str):
+    """Store a message in ChromaDB for RAG retrieval."""
+    if not content or len(content.strip()) < 3:
+        return
+
+    try:
+        message_collection.upsert(
+            ids=[message_id],
+            documents=[content],
+            metadatas=[{
+                "author": author,
+                "channel": channel,
+                "timestamp": timestamp,
+            }]
+        )
+    except Exception as e:
+        print(f"Failed to store message: {e}")
+
+
+def retrieve_relevant_context(query: str, exclude_ids: list[str] = None) -> list[dict]:
+    """Retrieve relevant past messages for context."""
+    try:
+        results = message_collection.query(
+            query_texts=[query],
+            n_results=RAG_RESULTS,
+        )
+
+        context = []
+        if results and results["documents"] and results["documents"][0]:
+            for i, doc in enumerate(results["documents"][0]):
+                msg_id = results["ids"][0][i] if results["ids"] else None
+                if exclude_ids and msg_id in exclude_ids:
+                    continue
+                metadata = results["metadatas"][0][i] if results["metadatas"] else {}
+                context.append({
+                    "content": doc,
+                    "author": metadata.get("author", "Unknown"),
+                    "channel": metadata.get("channel", "Unknown"),
+                })
+        return context
+    except Exception as e:
+        print(f"RAG retrieval failed: {e}")
+        return []
+
+
+# =============================================================================
 # Search & Image Logic
 # =============================================================================
 
@@ -144,7 +230,6 @@ def response_is_uncertain(text: str) -> bool:
 
 
 def get_response_text(response) -> str:
-    """Extract text content from xAI responses API response."""
     for item in response.output:
         if hasattr(item, "content"):
             for block in item.content:
@@ -169,11 +254,7 @@ def query_with_search(messages: list[dict]) -> str:
 
 
 def generate_image(prompt: str) -> str:
-    """Generate an image and return the URL."""
-    response = xai.images.generate(
-        model=IMAGE_MODEL,
-        prompt=prompt,
-    )
+    response = xai.images.generate(model=IMAGE_MODEL, prompt=prompt)
     return response.data[0].url
 
 
@@ -182,22 +263,23 @@ def generate_image(prompt: str) -> str:
 # =============================================================================
 
 def is_image_url(text: str) -> bool:
-    """Check if text is just an image URL from Grok."""
     text = text.strip()
     return text.startswith("https://imgen.x.ai/") or text.startswith("https://api.x.ai/v1/images/")
 
 
-async def get_conversation_thread(message) -> list[dict]:
-    """Walk back through the reply chain to build conversation history."""
+async def get_conversation_thread(message) -> tuple[list[dict], list[str]]:
+    """Walk back through reply chain. Returns (messages, message_ids)."""
     thread = []
+    msg_ids = []
     current = message
     depth = 0
 
     while current and depth < MAX_CONVERSATION_DEPTH:
         content = strip_mentions(current.content)
+        msg_ids.append(str(current.id))
+
         if content:
             if current.author == bot.user:
-                # Replace image URLs with placeholder
                 if is_image_url(content):
                     thread.append({"role": "assistant", "content": "[I generated an image]"})
                 else:
@@ -215,7 +297,7 @@ async def get_conversation_thread(message) -> list[dict]:
             break
 
     thread.reverse()
-    return thread
+    return thread, msg_ids
 
 
 def is_reply_to_bot(message) -> bool:
@@ -262,20 +344,35 @@ async def on_ready():
 
 @bot.event
 async def on_message(message):
+    # Ignore bot's own messages
     if message.author == bot.user:
         return
 
+    content = strip_mentions(message.content)
+
+    # Store ALL messages for RAG (even from non-grok channels)
+    if content:
+        channel_name = getattr(message.channel, "name", "DM")
+        store_message(
+            message_id=str(message.id),
+            content=content,
+            author=message.author.display_name,
+            channel=channel_name,
+            timestamp=message.created_at.isoformat(),
+        )
+
+    # Only respond in grok channels
     channel_name = getattr(message.channel, "name", "").lower()
     if "grok" not in channel_name:
         return
 
+    # Only respond to mentions or replies
     is_mention = bot.user in message.mentions
     is_reply = is_reply_to_bot(message)
 
     if not is_mention and not is_reply:
         return
 
-    content = strip_mentions(message.content)
     if not content:
         await message.reply("You pinged me for... nothing? Impressive.")
         return
@@ -283,7 +380,7 @@ async def on_message(message):
     user_id = message.author.id
     username = message.author.display_name
 
-    # Check if this is an image generation request
+    # Handle image generation
     if needs_image_generation(content):
         if is_image_rate_limited(user_id):
             remaining = get_image_cooldown_remaining(user_id)
@@ -301,18 +398,38 @@ async def on_message(message):
                 await message.reply(f"Image generation failed: {e}")
         return
 
-    # Build conversation context from reply chain
-    conversation = await get_conversation_thread(message)
+    # Build conversation from reply chain
+    conversation, thread_msg_ids = await get_conversation_thread(message)
 
+    # Load user memory and find referenced users
     memory = load_memory()
     user_notes = get_user_notes(user_id, memory)
 
+    full_conversation_text = " ".join(m["content"] for m in conversation)
+    referenced_users = find_referenced_users(full_conversation_text, memory, exclude_user_id=user_id)
+
+    # Retrieve relevant past messages via RAG
+    rag_context = retrieve_relevant_context(content, exclude_ids=thread_msg_ids)
+
+    # Build system prompt
     system = SYSTEM_PROMPT
+
     if user_notes:
         system += f"\n\nWhat you know about {username}: {user_notes}"
 
+    if referenced_users:
+        system += "\n\nOther people mentioned that you know about:"
+        for ref_name, ref_notes in referenced_users.items():
+            system += f"\n- {ref_name}: {ref_notes}"
+
+    if rag_context:
+        system += "\n\nRelevant past conversations from this server:"
+        for ctx in rag_context[:5]:  # Limit to top 5
+            system += f"\n- [{ctx['channel']}] {ctx['author']}: {ctx['content'][:200]}"
+
     messages = [{"role": "system", "content": system}] + conversation
 
+    # Query Grok
     async with message.channel.typing():
         try:
             use_search = needs_web_search(content)
