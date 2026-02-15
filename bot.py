@@ -181,6 +181,12 @@ def generate_image(prompt: str) -> str:
 # Conversation Threading
 # =============================================================================
 
+def is_image_url(text: str) -> bool:
+    """Check if text is just an image URL from Grok."""
+    text = text.strip()
+    return text.startswith("https://imgen.x.ai/") or text.startswith("https://api.x.ai/v1/images/")
+
+
 async def get_conversation_thread(message) -> list[dict]:
     """Walk back through the reply chain to build conversation history."""
     thread = []
@@ -191,7 +197,11 @@ async def get_conversation_thread(message) -> list[dict]:
         content = strip_mentions(current.content)
         if content:
             if current.author == bot.user:
-                thread.append({"role": "assistant", "content": content})
+                # Replace image URLs with placeholder
+                if is_image_url(content):
+                    thread.append({"role": "assistant", "content": "[I generated an image]"})
+                else:
+                    thread.append({"role": "assistant", "content": content})
             else:
                 thread.append({"role": "user", "content": content})
 
