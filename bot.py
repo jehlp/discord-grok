@@ -46,6 +46,12 @@ UNCERTAINTY_MARKERS = [
     "don't have access", "no information", "cannot confirm", "not aware",
 ]
 
+ALL_USERS_TRIGGERS = [
+    "everyone", "all users", "all people", "all members", "the server",
+    "rank", "ranking", "top 10", "top 5", "top ten", "top five", "leaderboard",
+    "most", "least", "who is the", "who's the", "compare", "list",
+]
+
 IMAGE_TRIGGERS = [
     "generate an image", "generate image", "create an image", "create image",
     "make an image", "make image", "draw", "picture of", "photo of",
@@ -265,6 +271,11 @@ def needs_image_generation(query: str) -> bool:
     return any(trigger in query_lower for trigger in IMAGE_TRIGGERS)
 
 
+def needs_all_users(query: str) -> bool:
+    query_lower = query.lower()
+    return any(trigger in query_lower for trigger in ALL_USERS_TRIGGERS)
+
+
 def response_is_uncertain(text: str) -> bool:
     text_lower = text.lower()
     return any(marker in text_lower for marker in UNCERTAINTY_MARKERS)
@@ -472,7 +483,17 @@ async def on_message(message):
     if user_notes:
         system += f"\n\nWhat you know about {username}: {user_notes}"
 
-    if referenced_users:
+    # If asking about all users/ranking, include everyone we know about
+    if needs_all_users(content):
+        system += "\n\nAll people you know about in this server:"
+        for uid, data in memory.items():
+            if uid == str(user_id):
+                continue  # Already included above
+            uname = data.get("username", "Unknown")
+            unotes = data.get("notes", "")
+            if unotes:
+                system += f"\n- {uname}: {unotes}"
+    elif referenced_users:
         system += "\n\nOther people mentioned that you know about:"
         for ref_name, ref_notes in referenced_users.items():
             system += f"\n- {ref_name}: {ref_notes}"
