@@ -42,30 +42,6 @@ Keep responses reasonably concise for chat - a few paragraphs is fine, just don'
 
 You have memory of users you've interacted with. You also have knowledge of past conversations in this server."""
 
-SEARCH_TRIGGERS = [
-    "search", "look up", "google", "find out", "latest", "current", "recent",
-    "news", "today", "yesterday", "this week", "this month", "2025", "2026",
-    "what happened", "who won", "score", "price of", "stock", "weather",
-]
-
-UNCERTAINTY_MARKERS = [
-    "i don't have", "i don't know", "i'm not sure", "i cannot", "i can't",
-    "my knowledge", "as of my", "cutoff", "i lack", "unable to",
-    "don't have access", "no information", "cannot confirm", "not aware",
-]
-
-ALL_USERS_TRIGGERS = [
-    "everyone", "all users", "all people", "all members", "the server",
-    "rank", "ranking", "top 10", "top 5", "top ten", "top five", "leaderboard",
-    "most", "least", "who is the", "who's the", "compare", "list",
-]
-
-IMAGE_TRIGGERS = [
-    "generate an image", "generate image", "create an image", "create image",
-    "make an image", "make image", "draw", "picture of", "photo of",
-    "illustration of", "render", "visualize", "show me what", "generate a picture",
-    "create a picture", "make a picture", "image of",
-]
 
 # =============================================================================
 # Clients
@@ -269,24 +245,47 @@ async def with_retry(func, *args, max_retries=3, **kwargs):
 # Search & Image Logic
 # =============================================================================
 
-def needs_web_search(query: str) -> bool:
-    query_lower = query.lower()
-    return any(trigger in query_lower for trigger in SEARCH_TRIGGERS)
-
-
-def needs_image_generation(query: str) -> bool:
-    query_lower = query.lower()
-    return any(trigger in query_lower for trigger in IMAGE_TRIGGERS)
-
-
-def needs_all_users(query: str) -> bool:
-    query_lower = query.lower()
-    return any(trigger in query_lower for trigger in ALL_USERS_TRIGGERS)
-
-
-def response_is_uncertain(text: str) -> bool:
-    text_lower = text.lower()
-    return any(marker in text_lower for marker in UNCERTAINTY_MARKERS)
+TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "web_search",
+            "description": "Search the web for current or recent information. Use when answering requires up-to-date data: news, prices, weather, scores, recent events, or anything you're unsure about.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "The search query"},
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "generate_image",
+            "description": "Generate an image from a text description. Use when the user asks to create, draw, render, or generate an image or picture.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "prompt": {"type": "string", "description": "Description of the image to generate"},
+                },
+                "required": ["prompt"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_all_users",
+            "description": "Get notes about all known users in this Discord server. Use when the question involves rankings, comparisons between members, or asks about everyone or the whole server.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+            },
+        },
+    },
+]
 
 
 def get_response_text(response) -> str:
@@ -296,13 +295,6 @@ def get_response_text(response) -> str:
                 if hasattr(block, "text"):
                     return block.text
     return ""
-
-
-async def query_chat(messages: list[dict]) -> str:
-    response = await with_retry(
-        xai.chat.completions.create, model=MODEL, messages=messages
-    )
-    return response.choices[0].message.content
 
 
 async def query_with_search(messages: list[dict]) -> str:
@@ -490,24 +482,6 @@ async def on_message(message):
     user_id = message.author.id
     username = message.author.display_name
 
-    # Handle image generation
-    if needs_image_generation(content):
-        if is_image_rate_limited(user_id):
-            remaining = get_image_cooldown_remaining(user_id)
-            minutes = remaining // 60
-            seconds = remaining % 60
-            await message.reply(f"Image cooldown. Try again in {minutes}m {seconds}s.")
-            return
-
-        async with message.channel.typing():
-            try:
-                image_url = await generate_image(content)
-                await message.reply(image_url)
-                record_image_request(user_id)
-            except Exception as e:
-                await message.reply(f"Image generation failed: {e}")
-        return
-
     # Build conversation from reply chain
     conversation, thread_msg_ids = await get_conversation_thread(message)
 
@@ -541,17 +515,7 @@ async def on_message(message):
     if user_notes:
         system += f"\n\nWhat you know about {username}: {user_notes}"
 
-    # If asking about all users/ranking, include everyone we know about
-    if needs_all_users(content):
-        system += "\n\nAll people you know about in this server:"
-        for uid, data in memory.items():
-            if uid == str(user_id):
-                continue  # Already included above
-            uname = data.get("username", "Unknown")
-            unotes = data.get("notes", "")
-            if unotes:
-                system += f"\n- {uname}: {unotes}"
-    elif referenced_users:
+    if referenced_users:
         system += "\n\nOther people mentioned that you know about:"
         for ref_name, ref_notes in referenced_users.items():
             system += f"\n- {ref_name}: {ref_notes}"
@@ -563,22 +527,71 @@ async def on_message(message):
 
     messages = [{"role": "system", "content": system}] + conversation
 
-    # Query Grok
+    # Query Grok with tool definitions — the model decides what to invoke
     async with message.channel.typing():
         try:
-            use_search = needs_web_search(content)
+            response = await with_retry(
+                xai.chat.completions.create,
+                model=MODEL,
+                messages=messages,
+                tools=TOOLS,
+            )
 
-            if use_search:
-                reply = await query_with_search(messages)
-            else:
-                reply = await query_chat(messages)
-                if response_is_uncertain(reply):
+            choice = response.choices[0]
+
+            # No tool calls — straightforward text response
+            if not choice.message.tool_calls:
+                reply = choice.message.content
+                reply = sanitize_reply(reply, user_id)
+                await send_reply(message, reply)
+                await update_user_notes(user_id, username, content, memory)
+                return
+
+            # Handle each tool call
+            for tool_call in choice.message.tool_calls:
+                name = tool_call.function.name
+                args = json.loads(tool_call.function.arguments)
+
+                if name == "generate_image":
+                    if is_image_rate_limited(user_id):
+                        remaining = get_image_cooldown_remaining(user_id)
+                        minutes = remaining // 60
+                        seconds = remaining % 60
+                        await message.reply(f"Image cooldown. Try again in {minutes}m {seconds}s.")
+                    else:
+                        image_url = await generate_image(args.get("prompt", content))
+                        await message.reply(image_url)
+                        record_image_request(user_id)
+                    return
+
+                if name == "web_search":
                     reply = await query_with_search(messages)
+                    reply = sanitize_reply(reply, user_id)
+                    await send_reply(message, reply)
+                    await update_user_notes(user_id, username, content, memory)
+                    return
 
-            reply = sanitize_reply(reply, user_id)
-            await send_reply(message, reply)
-
-            await update_user_notes(user_id, username, content, memory)
+                if name == "get_all_users":
+                    # Inject all user notes and re-query without tools
+                    system += "\n\nAll people you know about in this server:"
+                    for uid, data in memory.items():
+                        if uid == str(user_id):
+                            continue
+                        uname = data.get("username", "Unknown")
+                        unotes = data.get("notes", "")
+                        if unotes:
+                            system += f"\n- {uname}: {unotes}"
+                    messages[0] = {"role": "system", "content": system}
+                    response2 = await with_retry(
+                        xai.chat.completions.create,
+                        model=MODEL,
+                        messages=messages,
+                    )
+                    reply = response2.choices[0].message.content
+                    reply = sanitize_reply(reply, user_id)
+                    await send_reply(message, reply)
+                    await update_user_notes(user_id, username, content, memory)
+                    return
 
         except Exception as e:
             await message.reply(f"Something broke: {e}")
