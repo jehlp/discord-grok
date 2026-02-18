@@ -31,6 +31,7 @@ ALLOWED_TEXT_EXTENSIONS = {
     ".h", ".hpp", ".java", ".go", ".rs", ".rb", ".php", ".sql", ".log",
     ".ini", ".cfg", ".conf", ".env", ".gitignore", ".dockerfile",
 }
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
 
 SYSTEM_PROMPT = """You are Grok, a sharp-witted assistant in a Discord chat. Your personality:
 - Dry humor and edgy quips are welcome, but use them sparingly. Lead with substance, season with wit.
@@ -494,13 +495,19 @@ def resolve_mentions(text: str, guild) -> str:
     return re.sub(r"<@!?(\d+)>", replace_mention, text).strip()
 
 
-async def read_attachments(attachments: list) -> list[dict]:
-    """Read text file attachments and return their contents."""
+async def read_attachments(attachments: list) -> tuple[list[dict], list[str]]:
+    """Read text file attachments and collect image URLs. Returns (text_files, image_urls)."""
     results = []
+    image_urls = []
     async with aiohttp.ClientSession() as session:
         for attachment in attachments:
             filename = attachment.filename.lower()
             ext = Path(filename).suffix
+
+            # Check for image attachments
+            if ext in IMAGE_EXTENSIONS:
+                image_urls.append(attachment.url)
+                continue
 
             # Check if it's a readable text file
             if ext not in ALLOWED_TEXT_EXTENSIONS:
@@ -527,7 +534,7 @@ async def read_attachments(attachments: list) -> list[dict]:
                     "filename": attachment.filename,
                     "content": f"[Failed to read: {e}]"
                 })
-    return results
+    return results, image_urls
 
 
 def sanitize_reply(text: str, allowed_user_id: int) -> str:
@@ -596,10 +603,10 @@ async def on_message(message):
     if not is_mention and not is_reply:
         return
 
-    # Read any attached files
-    attachments_content = await read_attachments(message.attachments)
+    # Read any attached files and images
+    attachments_content, image_urls = await read_attachments(message.attachments)
 
-    if not content and not attachments_content:
+    if not content and not attachments_content and not image_urls:
         await message.reply("You pinged me for... nothing? Impressive.")
         return
 
@@ -609,15 +616,24 @@ async def on_message(message):
     # Build conversation from reply chain or session
     conversation, thread_msg_ids = await build_context(message)
 
-    # Append attachment content to the last user message
-    if attachments_content and conversation:
-        attachment_text = "\n\n--- Attached Files ---"
-        for att in attachments_content:
-            attachment_text += f"\n\n### {att['filename']}\n```\n{att['content']}\n```"
+    # Append attachment content and images to the last user message
+    if (attachments_content or image_urls) and conversation:
         # Find the last user message (should be the current one)
         for i in range(len(conversation) - 1, -1, -1):
             if conversation[i]["role"] == "user":
-                conversation[i]["content"] += attachment_text
+                # Append text file contents
+                if attachments_content:
+                    attachment_text = "\n\n--- Attached Files ---"
+                    for att in attachments_content:
+                        attachment_text += f"\n\n### {att['filename']}\n```\n{att['content']}\n```"
+                    conversation[i]["content"] += attachment_text
+
+                # Convert to multi-part content format for images
+                if image_urls:
+                    parts = [{"type": "text", "text": conversation[i]["content"]}]
+                    for url in image_urls:
+                        parts.append({"type": "image_url", "image_url": {"url": url}})
+                    conversation[i]["content"] = parts
                 break
 
     # Load user memory and find referenced users
@@ -627,7 +643,11 @@ async def on_message(message):
     # Extract explicitly mentioned user IDs from raw message (before stripping)
     mentioned_ids = extract_mentioned_user_ids(message.content)
 
-    full_conversation_text = " ".join(m["content"] for m in conversation)
+    full_conversation_text = " ".join(
+        m["content"] if isinstance(m["content"], str)
+        else " ".join(p["text"] for p in m["content"] if p["type"] == "text")
+        for m in conversation
+    )
     referenced_users = find_referenced_users(full_conversation_text, memory, exclude_user_id=user_id, mentioned_ids=mentioned_ids)
 
     # Retrieve relevant past messages via RAG (with relevance filtering)
@@ -724,11 +744,18 @@ async def on_message(message):
                         await update_user_notes(user_id, username, content, memory)
                         break
 
-            # Persist conversation to session
+            # Persist conversation to session (strip image parts — URLs expire)
             if reply:
-                # conversation already includes the current user message (from build_context)
-                conversation.append({"role": "assistant", "content": reply})
-                update_session(user_id, conversation)
+                session_msgs = []
+                for msg in conversation:
+                    if isinstance(msg["content"], list):
+                        # Extract just the text parts from multi-part messages
+                        text = " ".join(p["text"] for p in msg["content"] if p["type"] == "text")
+                        session_msgs.append({"role": msg["role"], "content": text})
+                    else:
+                        session_msgs.append(msg)
+                session_msgs.append({"role": "assistant", "content": reply})
+                update_session(user_id, session_msgs)
 
         except Exception as e:
             await message.reply(f"Something broke: {e}")
