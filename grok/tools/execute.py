@@ -2,9 +2,13 @@ import asyncio
 import os
 import signal
 import tempfile
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import discord
+
+EXECUTE_COOLDOWN_SECONDS = 120  # 2 minutes between executions per user
+last_execute_request: dict[int, datetime] = {}
 
 DEFINITION = {
     "type": "function",
@@ -63,8 +67,17 @@ def _build_sandboxed_script(script: str) -> str:
 
 
 async def handle(ctx, args):
+    # Rate limit check
+    now = datetime.now(timezone.utc)
+    last = last_execute_request.get(ctx.user_id)
+    if last and (now - last) < timedelta(seconds=EXECUTE_COOLDOWN_SECONDS):
+        remaining = EXECUTE_COOLDOWN_SECONDS - int((now - last).total_seconds())
+        return f"Rate limited. User must wait {remaining}s before running another build."
+
     script = args.get("script", "")
     upload_filename = args.get("upload_filename")
+
+    last_execute_request[ctx.user_id] = now
 
     # Create output directory
     output_dir = Path("/tmp/output")
