@@ -1,6 +1,5 @@
 from .config import MAX_CONVERSATION_DEPTH
 from .clients import bot
-from .sessions import get_session
 from .helpers import strip_mentions, resolve_mentions
 
 
@@ -71,27 +70,14 @@ async def get_ambient_context(channel, user_id: int) -> str:
 async def build_context(message) -> tuple[list[dict], list[str]]:
     """Build conversation context. Returns (messages, msg_ids).
 
-    Priority: reply chain > per-user session > fresh start.
+    Reply chain if replying, otherwise fresh start.
     """
-    user_id = message.author.id
     has_reply = message.reference and message.reference.message_id
 
     if has_reply:
-        conversation, msg_ids = await get_reply_chain(message)
-        return conversation, msg_ids
+        return await get_reply_chain(message)
 
-    # No reply chain -- use session if available
-    session = get_session(user_id)
-    if session and session["messages"]:
-        conversation = list(session["messages"])
-        # Add the current message
-        content = resolve_mentions(message.content, message.guild)
-        if content:
-            labeled = f"[{message.author.display_name}] {content}"
-            conversation.append({"role": "user", "content": labeled})
-        return conversation, [str(message.id)]
-
-    # No session either -- fresh start
+    # Fresh start
     conversation = []
     content = resolve_mentions(message.content, message.guild)
     if content:

@@ -2,7 +2,6 @@ import json
 
 from .config import MODEL, SYSTEM_PROMPT
 from .clients import bot, xai
-from .sessions import update_session, cleanup_sessions
 from .memory import load_memory, get_user_notes, extract_mentioned_user_ids, find_referenced_users, update_user_notes
 from .rag import store_message, retrieve_relevant_context
 from .api import with_retry
@@ -17,7 +16,6 @@ MAX_TOOL_RESULT_LEN = 4000  # Truncate tool results to save tokens
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user}")
-    bot.loop.create_task(cleanup_sessions())
 
 
 @bot.event
@@ -120,19 +118,7 @@ async def handle_grok_message(message, content, attachments_content, image_urls)
                 memory=memory,
             )
 
-            reply = await tool_loop(messages, ctx)
-
-            # Persist conversation to session (strip image parts -- URLs expire)
-            if reply:
-                session_msgs = []
-                for msg in conversation:
-                    if isinstance(msg["content"], list):
-                        text = " ".join(p["text"] for p in msg["content"] if p["type"] == "text")
-                        session_msgs.append({"role": msg["role"], "content": text})
-                    else:
-                        session_msgs.append(msg)
-                session_msgs.append({"role": "assistant", "content": reply})
-                update_session(user_id, session_msgs)
+            await tool_loop(messages, ctx)
 
         except Exception as e:
             await message.reply(f"Something broke: {e}")
