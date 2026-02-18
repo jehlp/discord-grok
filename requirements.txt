@@ -3,3 +3,6 @@ openai>=1.0
 thefuzz>=0.22
 chromadb>=0.4
 aiohttp>=3.9
+python-docx>=1.0
+python-pptx>=0.6
+openpyxl>=3.1
