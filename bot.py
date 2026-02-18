@@ -23,6 +23,7 @@ CHROMA_DIR = DATA_DIR / "chroma"
 MAX_CONVERSATION_DEPTH = 20
 IMAGE_RATE_LIMIT_SECONDS = 600
 RAG_RESULTS = 10  # Number of relevant messages to retrieve
+SESSION_TTL_SECONDS = 1800  # 30 minutes
 MAX_ATTACHMENT_SIZE = 100_000  # 100KB max for text files
 ALLOWED_TEXT_EXTENSIONS = {
     ".txt", ".md", ".py", ".js", ".ts", ".json", ".yaml", ".yml", ".toml",
@@ -85,6 +86,48 @@ def get_image_cooldown_remaining(user_id: int) -> int:
 
 def record_image_request(user_id: int):
     last_image_request[user_id] = datetime.now(timezone.utc)
+
+
+# =============================================================================
+# Per-User Session Store (in-memory)
+# =============================================================================
+
+# { user_id: { "messages": [{"role":..., "content":...}], "last_active": datetime } }
+active_sessions: dict[int, dict] = {}
+
+
+def get_session(user_id: int) -> dict | None:
+    """Get a user's active session if it exists and hasn't expired."""
+    session = active_sessions.get(user_id)
+    if not session:
+        return None
+    elapsed = datetime.now(timezone.utc) - session["last_active"]
+    if elapsed > timedelta(seconds=SESSION_TTL_SECONDS):
+        del active_sessions[user_id]
+        return None
+    return session
+
+
+def update_session(user_id: int, messages: list[dict]):
+    """Replace a user's session with the given messages, capped to MAX_CONVERSATION_DEPTH."""
+    capped = messages[-(MAX_CONVERSATION_DEPTH * 2):]  # keep last N exchanges
+    active_sessions[user_id] = {
+        "messages": capped,
+        "last_active": datetime.now(timezone.utc),
+    }
+
+
+async def cleanup_sessions():
+    """Periodically prune expired sessions."""
+    while True:
+        await asyncio.sleep(300)  # every 5 minutes
+        now = datetime.now(timezone.utc)
+        expired = [
+            uid for uid, s in active_sessions.items()
+            if (now - s["last_active"]) > timedelta(seconds=SESSION_TTL_SECONDS)
+        ]
+        for uid in expired:
+            del active_sessions[uid]
 
 
 # =============================================================================
@@ -196,19 +239,24 @@ def store_message(message_id: str, content: str, author: str, channel: str, time
         print(f"Failed to store message: {e}")
 
 
-def retrieve_relevant_context(query: str, exclude_ids: list[str] = None) -> list[dict]:
-    """Retrieve relevant past messages for context."""
+def retrieve_relevant_context(query: str, exclude_ids: list[str] = None, min_distance: float = 0.25) -> list[dict]:
+    """Retrieve relevant past messages for context, filtering by distance threshold."""
     try:
         results = message_collection.query(
             query_texts=[query],
             n_results=RAG_RESULTS,
+            include=["documents", "metadatas", "distances"],
         )
 
         context = []
         if results and results["documents"] and results["documents"][0]:
+            distances = results.get("distances", [[]])[0]
             for i, doc in enumerate(results["documents"][0]):
                 msg_id = results["ids"][0][i] if results["ids"] else None
                 if exclude_ids and msg_id in exclude_ids:
+                    continue
+                # Filter out low-relevance matches (higher distance = less relevant)
+                if distances and i < len(distances) and distances[i] > (1.0 - min_distance):
                     continue
                 metadata = results["metadatas"][0][i] if results["metadatas"] else {}
                 context.append({
@@ -316,7 +364,7 @@ async def generate_image(prompt: str) -> str:
 
 
 # =============================================================================
-# Conversation Threading
+# Conversation Threading & Context Building
 # =============================================================================
 
 def is_image_url(text: str) -> bool:
@@ -324,7 +372,7 @@ def is_image_url(text: str) -> bool:
     return text.startswith("https://imgen.x.ai/") or text.startswith("https://api.x.ai/v1/images/")
 
 
-async def get_conversation_thread(message) -> tuple[list[dict], list[str]]:
+async def get_reply_chain(message) -> tuple[list[dict], list[str]]:
     """Walk back through reply chain. Returns (messages, message_ids)."""
     thread = []
     msg_ids = []
@@ -355,6 +403,59 @@ async def get_conversation_thread(message) -> tuple[list[dict], list[str]]:
 
     thread.reverse()
     return thread, msg_ids
+
+
+async def get_ambient_context(channel, user_id: int) -> str:
+    """Fetch recent messages from other users for ambient channel awareness."""
+    ambient = []
+    try:
+        async for msg in channel.history(limit=15):
+            if msg.author.bot or msg.author.id == user_id:
+                continue
+            content = strip_mentions(msg.content)
+            if not content:
+                continue
+            ambient.append(f"- {msg.author.display_name}: {content[:150]}")
+            if len(ambient) >= 5:
+                break
+    except Exception:
+        pass
+
+    if not ambient:
+        return ""
+
+    ambient.reverse()  # chronological order
+    return "\n\nRecent channel activity (for context, not directed at you):\n" + "\n".join(ambient)
+
+
+async def build_context(message) -> tuple[list[dict], list[str]]:
+    """Build conversation context. Returns (messages, msg_ids).
+
+    Priority: reply chain > per-user session > fresh start.
+    """
+    user_id = message.author.id
+    has_reply = message.reference and message.reference.message_id
+
+    if has_reply:
+        conversation, msg_ids = await get_reply_chain(message)
+        return conversation, msg_ids
+
+    # No reply chain — use session if available
+    session = get_session(user_id)
+    if session and session["messages"]:
+        conversation = list(session["messages"])
+        # Add the current message
+        content = strip_mentions(message.content)
+        if content:
+            conversation.append({"role": "user", "content": content})
+        return conversation, [str(message.id)]
+
+    # No session either — fresh start
+    conversation = []
+    content = strip_mentions(message.content)
+    if content:
+        conversation.append({"role": "user", "content": content})
+    return conversation, [str(message.id)]
 
 
 def is_reply_to_bot(message) -> bool:
@@ -439,6 +540,7 @@ async def send_reply(message, text: str):
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user}")
+    bot.loop.create_task(cleanup_sessions())
 
 
 @bot.event
@@ -482,8 +584,8 @@ async def on_message(message):
     user_id = message.author.id
     username = message.author.display_name
 
-    # Build conversation from reply chain
-    conversation, thread_msg_ids = await get_conversation_thread(message)
+    # Build conversation from reply chain or session
+    conversation, thread_msg_ids = await build_context(message)
 
     # Append attachment content to the last user message
     if attachments_content and conversation:
@@ -506,8 +608,11 @@ async def on_message(message):
     full_conversation_text = " ".join(m["content"] for m in conversation)
     referenced_users = find_referenced_users(full_conversation_text, memory, exclude_user_id=user_id, mentioned_ids=mentioned_ids)
 
-    # Retrieve relevant past messages via RAG
+    # Retrieve relevant past messages via RAG (with relevance filtering)
     rag_context = retrieve_relevant_context(content, exclude_ids=thread_msg_ids)
+
+    # Fetch ambient channel context (recent messages from other users)
+    ambient = await get_ambient_context(message.channel, user_id)
 
     # Build system prompt
     system = SYSTEM_PROMPT
@@ -525,6 +630,9 @@ async def on_message(message):
         for ctx in rag_context[:5]:  # Limit to top 5
             system += f"\n- [{ctx['channel']}] {ctx['author']}: {ctx['content'][:200]}"
 
+    if ambient:
+        system += ambient
+
     messages = [{"role": "system", "content": system}] + conversation
 
     # Query Grok with tool definitions — the model decides what to invoke
@@ -538,6 +646,7 @@ async def on_message(message):
             )
 
             choice = response.choices[0]
+            reply = None
 
             # No tool calls — straightforward text response
             if not choice.message.tool_calls:
@@ -545,53 +654,59 @@ async def on_message(message):
                 reply = sanitize_reply(reply, user_id)
                 await send_reply(message, reply)
                 await update_user_notes(user_id, username, content, memory)
-                return
+            else:
+                # Handle each tool call
+                for tool_call in choice.message.tool_calls:
+                    name = tool_call.function.name
+                    args = json.loads(tool_call.function.arguments)
 
-            # Handle each tool call
-            for tool_call in choice.message.tool_calls:
-                name = tool_call.function.name
-                args = json.loads(tool_call.function.arguments)
+                    if name == "generate_image":
+                        if is_image_rate_limited(user_id):
+                            remaining = get_image_cooldown_remaining(user_id)
+                            minutes = remaining // 60
+                            seconds = remaining % 60
+                            await message.reply(f"Image cooldown. Try again in {minutes}m {seconds}s.")
+                        else:
+                            image_url = await generate_image(args.get("prompt", content))
+                            await message.reply(image_url)
+                            record_image_request(user_id)
+                        # Don't persist image requests to session
+                        return
 
-                if name == "generate_image":
-                    if is_image_rate_limited(user_id):
-                        remaining = get_image_cooldown_remaining(user_id)
-                        minutes = remaining // 60
-                        seconds = remaining % 60
-                        await message.reply(f"Image cooldown. Try again in {minutes}m {seconds}s.")
-                    else:
-                        image_url = await generate_image(args.get("prompt", content))
-                        await message.reply(image_url)
-                        record_image_request(user_id)
-                    return
+                    if name == "web_search":
+                        reply = await query_with_search(messages)
+                        reply = sanitize_reply(reply, user_id)
+                        await send_reply(message, reply)
+                        await update_user_notes(user_id, username, content, memory)
+                        break
 
-                if name == "web_search":
-                    reply = await query_with_search(messages)
-                    reply = sanitize_reply(reply, user_id)
-                    await send_reply(message, reply)
-                    await update_user_notes(user_id, username, content, memory)
-                    return
+                    if name == "get_all_users":
+                        # Inject all user notes and re-query without tools
+                        system += "\n\nAll people you know about in this server:"
+                        for uid, data in memory.items():
+                            if uid == str(user_id):
+                                continue
+                            uname = data.get("username", "Unknown")
+                            unotes = data.get("notes", "")
+                            if unotes:
+                                system += f"\n- {uname}: {unotes}"
+                        messages[0] = {"role": "system", "content": system}
+                        response2 = await with_retry(
+                            xai.chat.completions.create,
+                            model=MODEL,
+                            messages=messages,
+                        )
+                        reply = response2.choices[0].message.content
+                        reply = sanitize_reply(reply, user_id)
+                        await send_reply(message, reply)
+                        await update_user_notes(user_id, username, content, memory)
+                        break
 
-                if name == "get_all_users":
-                    # Inject all user notes and re-query without tools
-                    system += "\n\nAll people you know about in this server:"
-                    for uid, data in memory.items():
-                        if uid == str(user_id):
-                            continue
-                        uname = data.get("username", "Unknown")
-                        unotes = data.get("notes", "")
-                        if unotes:
-                            system += f"\n- {uname}: {unotes}"
-                    messages[0] = {"role": "system", "content": system}
-                    response2 = await with_retry(
-                        xai.chat.completions.create,
-                        model=MODEL,
-                        messages=messages,
-                    )
-                    reply = response2.choices[0].message.content
-                    reply = sanitize_reply(reply, user_id)
-                    await send_reply(message, reply)
-                    await update_user_notes(user_id, username, content, memory)
-                    return
+            # Persist conversation to session
+            if reply:
+                # conversation already includes the current user message (from build_context)
+                conversation.append({"role": "assistant", "content": reply})
+                update_session(user_id, conversation)
 
         except Exception as e:
             await message.reply(f"Something broke: {e}")
