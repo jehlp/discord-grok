@@ -8,7 +8,7 @@ DEFINITION = {
     "type": "function",
     "function": {
         "name": "create_poll",
-        "description": "Create a poll in the channel. Use when the user asks to make a poll, vote, or survey — or when you think a poll would be fun or relevant.",
+        "description": "Create a poll. Use when someone wants a vote, poll, survey, 'let's settle this', 'what does everyone think', or any situation where a group decision would help.",
         "parameters": {
             "type": "object",
             "properties": {

@@ -11,7 +11,7 @@ DEFINITION = {
     "type": "function",
     "function": {
         "name": "search_chat_history",
-        "description": "Search through the channel's chat history. Use when the user asks to look through, find, or search past messages. Can search by time range or message count.",
+        "description": "Search channel chat history. Use when someone mentions old messages, past conversations, 'remember when', 'who said', 'find that message', 'scroll back', or anything about what was said before.",
         "parameters": {
             "type": "object",
             "properties": {

@@ -7,7 +7,7 @@ DEFINITION = {
     "type": "function",
     "function": {
         "name": "generate_image",
-        "description": "Generate an image from a text description. Use when the user asks to create, draw, render, or generate an image or picture.",
+        "description": "Generate an image. Use whenever someone wants a picture, drawing, render, meme, artwork, visualization, or anything visual created. Casual phrasing counts — 'draw me', 'make a pic of', 'show me what X looks like', etc.",
         "parameters": {
             "type": "object",
             "properties": {

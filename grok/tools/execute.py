@@ -13,16 +13,15 @@ DEFINITION = {
     "function": {
         "name": "execute_code",
         "description": (
-            "Execute shell commands to build, compile, or create files. "
-            "Use when the user asks to make something that requires compilation (e.g. .jar, .exe, .o), "
-            "packaging (e.g. .zip, .tar.gz), or document generation (e.g. .docx, .pptx, .xlsx). "
-            "You can write source files and run build commands. "
-            "Available tools: Python 3.12, gcc/g++, Java (javac/jar), Node.js, zip/tar, "
-            "and Python libraries: python-docx, python-pptx, openpyxl. "
-            "For office docs, write a Python script that uses these libraries, then run it. "
-            "IMPORTANT: This tool is for creating FILES to upload — not for heavy computation. "
-            "Refuse requests designed to hog resources (e.g. huge prime searches, bitcoin mining, "
-            "stress tests, infinite loops). Scripts are limited to 30s CPU, 256MB RAM, 50MB disk."
+            "Build, compile, or generate any file that needs code execution. Use this tool broadly — "
+            "whenever someone wants a program, document, slideshow, spreadsheet, archive, or any "
+            "non-trivial file created. Covers: .jar, .exe, .o, .zip, .tar.gz, .docx, .pptx, .xlsx, "
+            "compiled programs, packaged projects, office documents, etc. "
+            "Available: Python 3.12, gcc/g++, Java (javac/jar), Node.js, zip/tar, "
+            "python-docx, python-pptx, openpyxl. "
+            "For office docs: write a Python script using these libraries, then run it. "
+            "NOT for heavy computation — refuse resource-hogging requests (huge prime searches, "
+            "mining, stress tests, infinite loops). Limited to 30s CPU, 256MB RAM, 50MB disk."
         ),
         "parameters": {
             "type": "object",

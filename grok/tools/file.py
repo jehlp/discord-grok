@@ -9,7 +9,7 @@ DEFINITION = {
     "type": "function",
     "function": {
         "name": "create_file",
-        "description": "Create a file and upload it to the chat. Use when the user asks you to make, write, or create a file, script, document, config, or any downloadable content.",
+        "description": "Create a plain text file and upload it. Use for simple text-based files (scripts, configs, notes, code, markdown) that don't need compilation or special libraries. For office docs (.docx, .pptx, .xlsx), compiled code, or archives, use execute_code instead.",
         "parameters": {
             "type": "object",
             "properties": {

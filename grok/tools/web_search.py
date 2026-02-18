@@ -6,7 +6,7 @@ DEFINITION = {
     "type": "function",
     "function": {
         "name": "web_search",
-        "description": "Search the web for current or recent information. Use when answering requires up-to-date data: news, prices, weather, scores, recent events, or anything you're unsure about.",
+        "description": "Search the web. Use broadly — any question about current events, news, prices, weather, scores, facts you're unsure about, or anything that benefits from real-time info. When in doubt, search.",
         "parameters": {
             "type": "object",
             "properties": {
