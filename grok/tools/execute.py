@@ -7,7 +7,7 @@ from pathlib import Path
 
 import discord
 
-EXECUTE_COOLDOWN_SECONDS = 120  # 2 minutes between executions per user
+EXECUTE_COOLDOWN_SECONDS = 600  # 10 minutes between executions per user
 last_execute_request: dict[int, datetime] = {}
 
 DEFINITION = {
