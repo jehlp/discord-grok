@@ -173,9 +173,11 @@ async def tool_loop(messages, ctx):
         for tc in choice.message.tool_calls:
             name = tc.function.name
             args = json.loads(tc.function.arguments)
+            print(f"[tool_loop] Calling {name} with {str(args)[:200]}")
             result = await dispatch(name, ctx, args)
             result_text = result or "Done."
-            if len(result_text) > MAX_TOOL_RESULT_LEN:
+            print(f"[tool_loop] {name} returned: {result_text[:200]}")
+            if name != "execute_code" and len(result_text) > MAX_TOOL_RESULT_LEN:
                 result_text = result_text[:MAX_TOOL_RESULT_LEN] + "\n[truncated]"
             messages.append({
                 "role": "tool",

@@ -114,19 +114,37 @@ async def handle(ctx, args):
     except Exception as e:
         return f"Build failed to start: {e}"
 
+    stdout_text = stdout.decode(errors="replace")[:2000]
+    stderr_text = stderr.decode(errors="replace")[:2000]
+
     if proc.returncode != 0:
-        error_output = stderr.decode(errors="replace")[:1500]
+        print(f"[execute_code] FAILED (exit {proc.returncode})\nstderr: {stderr_text[:500]}")
         if proc.returncode == -9 or proc.returncode == 137:
             return "Build killed — hit resource limits (CPU or memory). Simplify the task."
-        return f"Build failed (exit {proc.returncode}):\n{error_output}"
+        return f"Build failed (exit {proc.returncode}):\n{stderr_text[:1500]}"
 
-    # Find files to upload
-    output_files = list(output_dir.iterdir())
+    print(f"[execute_code] OK. stdout: {stdout_text[:200]}")
+    if stderr_text.strip():
+        print(f"[execute_code] stderr: {stderr_text[:200]}")
+
+    # Find files to upload — check /tmp/output/ first, then fall back to work_dir
+    output_files = [f for f in output_dir.iterdir() if f.is_file()]
     if not output_files:
-        stdout_text = stdout.decode(errors="replace")[:2000]
+        # Check if script wrote files to work_dir instead
+        work_files = [
+            f for f in Path(work_dir).iterdir()
+            if f.is_file() and f.name != "_run.sh"
+            and not f.name.endswith((".java", ".c", ".cpp", ".h", ".py", ".js", ".sh"))
+        ]
+        if work_files:
+            print(f"[execute_code] No files in /tmp/output, found in work_dir: {[f.name for f in work_files]}")
+            output_files = work_files
+
+    if not output_files:
+        print(f"[execute_code] No output files found anywhere")
         if stdout_text.strip():
             return f"Build completed. Output:\n{stdout_text}"
-        return "Build completed but no output files were produced in /tmp/output/."
+        return "Build completed but no output files were produced. Make sure to write output to /tmp/output/."
 
     if upload_filename:
         target = output_dir / upload_filename
