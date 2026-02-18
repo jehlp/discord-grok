@@ -51,8 +51,7 @@ async def handle(ctx, args):
         return msg
 
     image_url = await gen_image(args.get("prompt", ctx.content))
-    ctx.replied = True
     await ctx.message.reply(image_url)
     record_image_request(ctx.user_id)
     print(f"[generate_image] Generated for user {ctx.user_id}")
-    return "Image generated and sent to the channel."
+    return "Image generated and sent to the channel. Now write a short witty response about it."
