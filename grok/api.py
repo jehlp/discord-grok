@@ -28,12 +28,12 @@ def get_response_text(response) -> str:
     return ""
 
 
-async def query_with_search(messages: list[dict]) -> str:
-    input_msgs = [{"role": m["role"], "content": m["content"]} for m in messages]
+async def query_with_search(query: str) -> str:
+    """Run a web search with a single focused query instead of the full conversation."""
     response = await with_retry(
         xai.responses.create,
         model=MODEL,
-        input=input_msgs,
+        input=[{"role": "user", "content": query}],
         tools=[{"type": "web_search"}],
     )
     return get_response_text(response)

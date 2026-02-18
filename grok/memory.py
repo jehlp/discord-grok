@@ -69,19 +69,31 @@ def find_referenced_users(text: str, memory: dict, exclude_user_id: int = None, 
     return referenced
 
 
+NOTES_INTERVAL = 3  # Only update notes every N messages per user
+_message_counts: dict[int, int] = {}
+
+
 async def update_user_notes(user_id: int, username: str, message: str, memory: dict):
+    # Debounce: only call LLM every Nth message per user
+    _message_counts[user_id] = _message_counts.get(user_id, 0) + 1
+    if _message_counts[user_id] % NOTES_INTERVAL != 0:
+        return
+
     current = memory.get(str(user_id), {}).get("notes", "No prior notes.")
 
-    response = await with_retry(
-        xai.chat.completions.create,
-        model=NOTES_MODEL,
-        messages=[{
-            "role": "user",
-            "content": f"""Update notes about {username}. Current: {current}
+    try:
+        response = await with_retry(
+            xai.chat.completions.create,
+            model=NOTES_MODEL,
+            messages=[{
+                "role": "user",
+                "content": f"""Update notes about {username}. Current: {current}
 Message: {message[:300]}
 Write 2-3 sentences about interests/personality. If nothing new, return current notes unchanged."""
-        }],
-    )
+            }],
+        )
 
-    memory[str(user_id)] = {"username": username, "notes": response.choices[0].message.content}
-    save_memory(memory)
+        memory[str(user_id)] = {"username": username, "notes": response.choices[0].message.content}
+        save_memory(memory)
+    except Exception as e:
+        print(f"[memory] Failed to update notes for {username}: {e}")

@@ -17,5 +17,6 @@ DEFINITION = {
 
 
 async def handle(ctx, args):
-    result = await query_with_search(ctx.messages)
+    query = args.get("query", ctx.content)
+    result = await query_with_search(query)
     return result or "No results found."
