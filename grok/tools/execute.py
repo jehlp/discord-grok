@@ -6,8 +6,6 @@ from pathlib import Path
 
 import discord
 
-from ..memory import update_user_notes
-
 DEFINITION = {
     "type": "function",
     "function": {
@@ -40,10 +38,6 @@ DEFINITION = {
                     "type": "string",
                     "description": "Filename for the uploaded artifact (e.g. 'hello.jar', 'report.docx'). If not specified, uploads all files in /tmp/output/.",
                 },
-                "description": {
-                    "type": "string",
-                    "description": "A brief message to send with the file.",
-                },
             },
             "required": ["script"],
         },
@@ -60,10 +54,10 @@ def _build_sandboxed_script(script: str) -> str:
     return (
         "#!/bin/bash\n"
         "set -e\n"
-        f"ulimit -v {MEM_LIMIT_BYTES // 1024} 2>/dev/null || true\n"  # virtual memory (KB)
-        f"ulimit -f {MAX_OUTPUT_SIZE // 512} 2>/dev/null || true\n"    # max file size (512-byte blocks)
-        "ulimit -t 30 2>/dev/null || true\n"                           # CPU seconds
-        "ulimit -u 64 2>/dev/null || true\n"                           # max processes (prevent fork bombs)
+        f"ulimit -v {MEM_LIMIT_BYTES // 1024} 2>/dev/null || true\n"
+        f"ulimit -f {MAX_OUTPUT_SIZE // 512} 2>/dev/null || true\n"
+        "ulimit -t 30 2>/dev/null || true\n"
+        "ulimit -u 64 2>/dev/null || true\n"
         f"{script}\n"
     )
 
@@ -71,25 +65,22 @@ def _build_sandboxed_script(script: str) -> str:
 async def handle(ctx, args):
     script = args.get("script", "")
     upload_filename = args.get("upload_filename")
-    desc = args.get("description", "")
 
     # Create output directory
     output_dir = Path("/tmp/output")
     output_dir.mkdir(parents=True, exist_ok=True)
-    # Clean any previous output
     for f in output_dir.iterdir():
         if f.is_file():
             f.unlink()
 
-    # Create a temp working directory for the build
     work_dir = tempfile.mkdtemp(prefix="grok_build_")
 
-    # Write the sandboxed script to a file
+    # Write the sandboxed script
     script_path = Path(work_dir) / "_run.sh"
     script_path.write_text(_build_sandboxed_script(script))
     script_path.chmod(0o755)
 
-    # Run the script in its own process group so we can kill the whole tree
+    # Run in its own process group
     try:
         proc = await asyncio.create_subprocess_exec(
             "bash", str(script_path),
@@ -102,56 +93,45 @@ async def handle(ctx, args):
             proc.communicate(), timeout=TIMEOUT_SECONDS
         )
     except asyncio.TimeoutError:
-        # Kill the entire process group
         try:
             os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
         except (ProcessLookupError, OSError):
             pass
-        await ctx.message.reply("Build timed out (30s limit). This tool is for creating files, not heavy computation.")
-        return "[build timed out]"
+        return "Build timed out (30s limit). Script took too long — simplify or reduce scope."
     except Exception as e:
-        await ctx.message.reply(f"Build failed: {e}")
-        return f"[build error: {e}]"
+        return f"Build failed to start: {e}"
 
     if proc.returncode != 0:
         error_output = stderr.decode(errors="replace")[:1500]
-        # Detect resource limit kills
         if proc.returncode == -9 or proc.returncode == 137:
-            await ctx.message.reply("Build killed — hit resource limits (CPU or memory). This tool is for creating files, not heavy computation.")
-        else:
-            await ctx.message.reply(f"Build failed (exit {proc.returncode}):\n```\n{error_output}\n```")
-        return f"[build failed: exit {proc.returncode}]"
+            return "Build killed — hit resource limits (CPU or memory). Simplify the task."
+        return f"Build failed (exit {proc.returncode}):\n{error_output}"
 
     # Find files to upload
     output_files = list(output_dir.iterdir())
     if not output_files:
-        # Maybe the output is just stdout
         stdout_text = stdout.decode(errors="replace")[:2000]
         if stdout_text.strip():
-            await ctx.message.reply(f"```\n{stdout_text}\n```")
-            return stdout_text
-        await ctx.message.reply("Build completed but no output files were produced.")
-        return "[no output]"
+            return f"Build completed. Output:\n{stdout_text}"
+        return "Build completed but no output files were produced in /tmp/output/."
 
-    # Upload files
     if upload_filename:
         target = output_dir / upload_filename
         if target.exists():
             output_files = [target]
 
+    # Upload files to Discord
     discord_files = []
     for f in output_files:
-        if f.is_file() and f.stat().st_size <= 25_000_000:  # Discord 25MB limit
+        if f.is_file() and f.stat().st_size <= 25_000_000:
             discord_files.append(discord.File(str(f), filename=f.name))
 
     if discord_files:
+        filenames = ", ".join(f.name for f in output_files)
         await ctx.message.reply(
-            desc or "Here you go:",
+            f"Here you go:",
             files=discord_files,
         )
+        return f"Files created and uploaded: {filenames}"
     else:
-        await ctx.message.reply("Output files were too large to upload (>25MB).")
-
-    reply = desc or f"[uploaded {', '.join(f.name for f in output_files)}]"
-    await update_user_notes(ctx.user_id, ctx.username, ctx.content, ctx.memory)
-    return reply
+        return "Output files were too large to upload (>25MB Discord limit)."

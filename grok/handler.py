@@ -10,6 +10,8 @@ from .context import build_context, get_ambient_context, is_reply_to_bot
 from .helpers import strip_mentions, read_attachments, sanitize_reply, send_reply
 from .tools import TOOLS, ToolContext, dispatch
 
+MAX_TOOL_ROUNDS = 5
+
 
 @bot.event
 async def on_ready():
@@ -103,16 +105,9 @@ async def handle_grok_message(message, content, attachments_content, image_urls)
     system = build_system_prompt(username, user_notes, referenced_users, rag_context, ambient)
     messages = [{"role": "system", "content": system}] + conversation
 
-    # Query and handle response
+    # Query and handle response with tool calling loop
     async with message.channel.typing():
         try:
-            response = await with_retry(
-                xai.chat.completions.create,
-                model=MODEL,
-                messages=messages,
-                tools=TOOLS,
-            )
-
             ctx = ToolContext(
                 message=message,
                 messages=messages,
@@ -124,7 +119,7 @@ async def handle_grok_message(message, content, attachments_content, image_urls)
                 memory=memory,
             )
 
-            reply = await handle_response(response, ctx)
+            reply = await tool_loop(messages, ctx)
 
             # Persist conversation to session (strip image parts -- URLs expire)
             if reply:
@@ -140,6 +135,62 @@ async def handle_grok_message(message, content, attachments_content, image_urls)
 
         except Exception as e:
             await message.reply(f"Something broke: {e}")
+
+
+async def tool_loop(messages, ctx):
+    """Call the API in a loop, executing tool calls until the model gives a text response."""
+    for _ in range(MAX_TOOL_ROUNDS):
+        response = await with_retry(
+            xai.chat.completions.create,
+            model=MODEL,
+            messages=messages,
+            tools=TOOLS,
+        )
+
+        choice = response.choices[0]
+
+        # No tool calls -- final text response
+        if not choice.message.tool_calls:
+            reply = choice.message.content
+            if reply:
+                reply = sanitize_reply(reply, ctx.user_id)
+                await send_reply(ctx.message, reply)
+            await update_user_notes(ctx.user_id, ctx.username, ctx.content, ctx.memory)
+            return reply
+
+        # Append the assistant message with tool calls
+        assistant_msg = {"role": "assistant", "content": choice.message.content, "tool_calls": []}
+        for tc in choice.message.tool_calls:
+            assistant_msg["tool_calls"].append({
+                "id": tc.id,
+                "type": "function",
+                "function": {"name": tc.function.name, "arguments": tc.function.arguments},
+            })
+        messages.append(assistant_msg)
+
+        # Execute each tool call and append results
+        for tc in choice.message.tool_calls:
+            name = tc.function.name
+            args = json.loads(tc.function.arguments)
+            result = await dispatch(name, ctx, args)
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tc.id,
+                "content": result or "Done.",
+            })
+
+    # Hit max rounds -- ask model for a final response without tools
+    response = await with_retry(
+        xai.chat.completions.create,
+        model=MODEL,
+        messages=messages,
+    )
+    reply = response.choices[0].message.content
+    if reply:
+        reply = sanitize_reply(reply, ctx.user_id)
+        await send_reply(ctx.message, reply)
+    await update_user_notes(ctx.user_id, ctx.username, ctx.content, ctx.memory)
+    return reply
 
 
 def build_system_prompt(username, user_notes, referenced_users, rag_context, ambient):
@@ -162,24 +213,3 @@ def build_system_prompt(username, user_notes, referenced_users, rag_context, amb
         system += ambient
 
     return system
-
-
-async def handle_response(response, ctx):
-    choice = response.choices[0]
-
-    # No tool calls -- straightforward text response
-    if not choice.message.tool_calls:
-        reply = choice.message.content
-        reply = sanitize_reply(reply, ctx.user_id)
-        await send_reply(ctx.message, reply)
-        await update_user_notes(ctx.user_id, ctx.username, ctx.content, ctx.memory)
-        return reply
-
-    # Handle tool calls
-    for tool_call in choice.message.tool_calls:
-        name = tool_call.function.name
-        args = json.loads(tool_call.function.arguments)
-        reply = await dispatch(name, ctx, args)
-        return reply
-
-    return None

@@ -3,8 +3,6 @@ from pathlib import Path
 
 import discord
 
-from ..memory import update_user_notes
-
 DEFINITION = {
     "type": "function",
     "function": {
@@ -39,6 +37,4 @@ async def handle(ctx, args):
     finally:
         tmp_path.unlink(missing_ok=True)
         Path(tmp_dir).rmdir()
-    reply = desc or f"[uploaded {filename}]"
-    await update_user_notes(ctx.user_id, ctx.username, ctx.content, ctx.memory)
-    return reply
+    return f"File '{filename}' created and uploaded to the channel."

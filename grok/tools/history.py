@@ -1,11 +1,6 @@
-import re
 from datetime import datetime, timedelta, timezone
 
-from ..config import MODEL
-from ..clients import xai
-from ..api import with_retry
-from ..helpers import strip_mentions, sanitize_reply, send_reply
-from ..memory import update_user_notes
+from ..helpers import strip_mentions
 
 DEFINITION = {
     "type": "function",
@@ -33,7 +28,6 @@ async def handle(ctx, args):
 
     # Fetch channel history
     history_lines = []
-    history_msgs = {}  # index -> message object for pinning
     msg_index = 0
     async for msg in ctx.message.channel.history(limit=max_msgs, after=after_time, oldest_first=True):
         if msg.author.bot:
@@ -43,42 +37,11 @@ async def handle(ctx, args):
             continue
         msg_index += 1
         timestamp = msg.created_at.strftime("%Y-%m-%d %H:%M")
-        line = f"#{msg_index} [{timestamp}] {msg.author.display_name}: {msg_content[:300]}"
+        line = f"[{timestamp}] {msg.author.display_name}: {msg_content[:300]}"
         history_lines.append(line)
-        history_msgs[str(msg_index)] = msg
 
     if not history_lines:
-        reply = f"No messages found in the last {hours_back} hours."
-        await send_reply(ctx.message, reply)
-        await update_user_notes(ctx.user_id, ctx.username, ctx.content, ctx.memory)
-        return reply
+        return f"No messages found in the last {hours_back} hours."
 
-    # Build a focused prompt with the history
     history_block = "\n".join(history_lines)
-    search_system = ctx.system + f"\n\nYou searched the channel history ({len(history_lines)} messages from the last {hours_back}h). Your objective: {objective}\n\nHere are the messages:\n\n{history_block}"
-    search_system += "\n\nDo NOT include message numbers, IDs, or internal formatting in your response — just talk naturally."
-    search_system += " If you need to pin a message, add [PIN:#N] at the very end of your response (where N is the message number). Only pin if explicitly asked to."
-
-    search_messages = [{"role": "system", "content": search_system}] + ctx.conversation
-    response = await with_retry(
-        xai.chat.completions.create,
-        model=MODEL,
-        messages=search_messages,
-    )
-    reply = response.choices[0].message.content
-
-    # Check for pin directives
-    pin_match = re.search(r'\[PIN:#?(\d+)\]', reply)
-    if pin_match:
-        pin_idx = pin_match.group(1)
-        reply = reply.replace(pin_match.group(0), "").strip()
-        if pin_idx in history_msgs:
-            try:
-                await history_msgs[pin_idx].pin()
-            except Exception as e:
-                print(f"Failed to pin message #{pin_idx}: {e}")
-
-    reply = sanitize_reply(reply, ctx.user_id)
-    await send_reply(ctx.message, reply)
-    await update_user_notes(ctx.user_id, ctx.username, ctx.content, ctx.memory)
-    return reply
+    return f"Search objective: {objective}\n{len(history_lines)} messages from the last {hours_back}h:\n\n{history_block}"

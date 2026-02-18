@@ -2,8 +2,6 @@ from datetime import timedelta
 
 import discord
 
-from ..memory import update_user_notes
-
 DEFINITION = {
     "type": "function",
     "function": {
@@ -37,6 +35,4 @@ async def handle(ctx, args):
     for answer in answers:
         poll.add_answer(text=answer[:55])
     await ctx.message.channel.send(poll=poll)
-    reply = f"[created poll: {question}]"
-    await update_user_notes(ctx.user_id, ctx.username, ctx.content, ctx.memory)
-    return reply
+    return f"Poll created: {question}"

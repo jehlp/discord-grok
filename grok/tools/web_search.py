@@ -1,6 +1,4 @@
 from ..api import query_with_search
-from ..helpers import sanitize_reply, send_reply
-from ..memory import update_user_notes
 
 DEFINITION = {
     "type": "function",
@@ -19,8 +17,5 @@ DEFINITION = {
 
 
 async def handle(ctx, args):
-    reply = await query_with_search(ctx.messages)
-    reply = sanitize_reply(reply, ctx.user_id)
-    await send_reply(ctx.message, reply)
-    await update_user_notes(ctx.user_id, ctx.username, ctx.content, ctx.memory)
-    return reply
+    result = await query_with_search(ctx.messages)
+    return result or "No results found."
