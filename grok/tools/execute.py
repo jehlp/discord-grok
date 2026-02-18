@@ -74,6 +74,7 @@ async def handle(ctx, args):
         seconds = remaining % 60
         msg = f"Build cooldown — try again in {minutes}m {seconds}s."
         print(f"[execute_code] RATE LIMITED user {ctx.user_id}: {msg}")
+        ctx.replied = True
         await ctx.message.reply(msg)
         return msg
 
@@ -162,8 +163,9 @@ async def handle(ctx, args):
 
     if discord_files:
         filenames = ", ".join(f.name for f in output_files)
+        ctx.replied = True
         await ctx.message.reply(
-            f"Here you go:",
+            "Here you go:",
             files=discord_files,
         )
         return f"Files created and uploaded: {filenames}"

@@ -30,6 +30,7 @@ async def handle(ctx, args):
     tmp_path = Path(tmp_dir) / filename
     tmp_path.write_text(file_content)
     try:
+        ctx.replied = True
         await ctx.message.reply(
             desc or f"Here's `{filename}`:",
             file=discord.File(str(tmp_path), filename=filename),

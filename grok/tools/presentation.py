@@ -66,6 +66,7 @@ async def handle(ctx, args):
         seconds = remaining % 60
         msg = f"Presentation cooldown — try again in {minutes}m {seconds}s."
         print(f"[create_presentation] RATE LIMITED user {ctx.user_id}: {msg}")
+        ctx.replied = True
         await ctx.message.reply(msg)
         return msg
 
@@ -136,6 +137,7 @@ async def handle(ctx, args):
             discord_files.append(discord.File(str(f), filename=filename))
 
     if discord_files:
+        ctx.replied = True
         await ctx.message.reply("Here you go:", files=discord_files)
         return f"Presentation '{filename}' created and uploaded."
     else:

@@ -1,6 +1,6 @@
 import importlib
 import pkgutil
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import discord
 
@@ -15,6 +15,7 @@ class ToolContext:
     user_id: int
     username: str
     memory: dict
+    replied: bool = field(default=False)  # set True when tool sends a Discord message
 
 
 # Auto-discover tool modules and collect DEFINITION/handle pairs

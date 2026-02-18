@@ -46,10 +46,12 @@ async def handle(ctx, args):
         seconds = remaining % 60
         msg = f"Image cooldown — try again in {minutes}m {seconds}s."
         print(f"[generate_image] RATE LIMITED user {ctx.user_id}: {msg}")
+        ctx.replied = True
         await ctx.message.reply(msg)
         return msg
 
     image_url = await gen_image(args.get("prompt", ctx.content))
+    ctx.replied = True
     await ctx.message.reply(image_url)
     record_image_request(ctx.user_id)
     print(f"[generate_image] Generated for user {ctx.user_id}")

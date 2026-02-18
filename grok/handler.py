@@ -153,7 +153,7 @@ async def tool_loop(messages, ctx):
         # No tool calls -- final text response
         if not choice.message.tool_calls:
             reply = choice.message.content
-            if reply:
+            if reply and not ctx.replied:
                 reply = sanitize_reply(reply, ctx.user_id)
                 await send_reply(ctx.message, reply)
             await update_user_notes(ctx.user_id, ctx.username, ctx.content, ctx.memory)
@@ -186,15 +186,18 @@ async def tool_loop(messages, ctx):
             })
 
     # Hit max rounds -- ask model for a final response without tools
-    response = await with_retry(
-        xai.chat.completions.create,
-        model=MODEL,
-        messages=messages,
-    )
-    reply = response.choices[0].message.content
-    if reply:
-        reply = sanitize_reply(reply, ctx.user_id)
-        await send_reply(ctx.message, reply)
+    if not ctx.replied:
+        response = await with_retry(
+            xai.chat.completions.create,
+            model=MODEL,
+            messages=messages,
+        )
+        reply = response.choices[0].message.content
+        if reply:
+            reply = sanitize_reply(reply, ctx.user_id)
+            await send_reply(ctx.message, reply)
+    else:
+        reply = None
     await update_user_notes(ctx.user_id, ctx.username, ctx.content, ctx.memory)
     return reply
 

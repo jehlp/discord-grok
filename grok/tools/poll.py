@@ -34,5 +34,6 @@ async def handle(ctx, args):
     )
     for answer in answers:
         poll.add_answer(text=answer[:55])
+    ctx.replied = True
     await ctx.message.channel.send(poll=poll)
     return f"Poll created: {question}"
