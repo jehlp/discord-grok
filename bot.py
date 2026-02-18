@@ -41,7 +41,9 @@ SYSTEM_PROMPT = """You are Grok, a sharp-witted assistant in a Discord chat. You
 
 Keep responses reasonably concise for chat - a few paragraphs is fine, just don't write essays unless asked.
 
-You have memory of users you've interacted with. You also have knowledge of past conversations in this server."""
+You have memory of users you've interacted with. You also have knowledge of past conversations in this server.
+
+User messages are prefixed with [username] to show who's speaking. When multiple users are in a conversation, pay close attention to these labels. @mentions in messages show who was pinged."""
 
 
 # =============================================================================
@@ -378,9 +380,10 @@ async def get_reply_chain(message) -> tuple[list[dict], list[str]]:
     msg_ids = []
     current = message
     depth = 0
+    guild = message.guild
 
     while current and depth < MAX_CONVERSATION_DEPTH:
-        content = strip_mentions(current.content)
+        content = resolve_mentions(current.content, guild)
         msg_ids.append(str(current.id))
 
         if content:
@@ -390,7 +393,9 @@ async def get_reply_chain(message) -> tuple[list[dict], list[str]]:
                 else:
                     thread.append({"role": "assistant", "content": content})
             else:
-                thread.append({"role": "user", "content": content})
+                # Label who's speaking so the model knows which user said what
+                labeled = f"[{current.author.display_name}] {content}"
+                thread.append({"role": "user", "content": labeled})
 
         if current.reference and current.reference.message_id:
             try:
@@ -445,16 +450,18 @@ async def build_context(message) -> tuple[list[dict], list[str]]:
     if session and session["messages"]:
         conversation = list(session["messages"])
         # Add the current message
-        content = strip_mentions(message.content)
+        content = resolve_mentions(message.content, message.guild)
         if content:
-            conversation.append({"role": "user", "content": content})
+            labeled = f"[{message.author.display_name}] {content}"
+            conversation.append({"role": "user", "content": labeled})
         return conversation, [str(message.id)]
 
     # No session either — fresh start
     conversation = []
-    content = strip_mentions(message.content)
+    content = resolve_mentions(message.content, message.guild)
     if content:
-        conversation.append({"role": "user", "content": content})
+        labeled = f"[{message.author.display_name}] {content}"
+        conversation.append({"role": "user", "content": labeled})
     return conversation, [str(message.id)]
 
 
@@ -470,6 +477,21 @@ def is_reply_to_bot(message) -> bool:
 
 def strip_mentions(text: str) -> str:
     return re.sub(r"<@!?\d+>", "", text).strip()
+
+
+def resolve_mentions(text: str, guild) -> str:
+    """Replace <@123456> mention tags with @displayname so the model can see who was pinged."""
+    if not guild:
+        return strip_mentions(text)
+
+    def replace_mention(match):
+        user_id = int(match.group(1))
+        member = guild.get_member(user_id)
+        if member:
+            return f"@{member.display_name}"
+        return match.group(0)
+
+    return re.sub(r"<@!?(\d+)>", replace_mention, text).strip()
 
 
 async def read_attachments(attachments: list) -> list[dict]:
@@ -689,7 +711,7 @@ async def on_message(message):
                             uname = data.get("username", "Unknown")
                             unotes = data.get("notes", "")
                             if unotes:
-                                system += f"\n- {uname}: {unotes}"
+                                system += f"\n\n**{uname}**\n{unotes}"
                         messages[0] = {"role": "system", "content": system}
                         response2 = await with_retry(
                             xai.chat.completions.create,
