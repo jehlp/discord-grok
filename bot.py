@@ -826,17 +826,19 @@ async def on_message(message):
 
                         # Fetch channel history
                         history_lines = []
-                        history_msgs = {}  # id -> message object for pinning etc
+                        history_msgs = {}  # index -> message object for pinning
+                        msg_index = 0
                         async for msg in message.channel.history(limit=max_msgs, after=after_time, oldest_first=True):
                             if msg.author.bot:
                                 continue
                             msg_content = strip_mentions(msg.content)
                             if not msg_content:
                                 continue
+                            msg_index += 1
                             timestamp = msg.created_at.strftime("%Y-%m-%d %H:%M")
-                            line = f"[{timestamp}] {msg.author.display_name} (msg_id:{msg.id}): {msg_content[:300]}"
+                            line = f"#{msg_index} [{timestamp}] {msg.author.display_name}: {msg_content[:300]}"
                             history_lines.append(line)
-                            history_msgs[str(msg.id)] = msg
+                            history_msgs[str(msg_index)] = msg
 
                         if not history_lines:
                             reply = f"No messages found in the last {hours_back} hours."
@@ -847,7 +849,8 @@ async def on_message(message):
                         # Build a focused prompt with the history
                         history_block = "\n".join(history_lines)
                         search_system = system + f"\n\nYou searched the channel history ({len(history_lines)} messages from the last {hours_back}h). Your objective: {objective}\n\nHere are the messages:\n\n{history_block}"
-                        search_system += "\n\nIMPORTANT: If you want to pin a message, include its msg_id in your response like [PIN:msg_id]. Only pin if explicitly asked to."
+                        search_system += "\n\nDo NOT include message numbers, IDs, or internal formatting in your response — just talk naturally."
+                        search_system += " If you need to pin a message, add [PIN:#N] at the very end of your response (where N is the message number). Only pin if explicitly asked to."
 
                         search_messages = [{"role": "system", "content": search_system}] + conversation
                         response2 = await with_retry(
@@ -858,15 +861,15 @@ async def on_message(message):
                         reply = response2.choices[0].message.content
 
                         # Check for pin directives
-                        pin_match = re.search(r'\[PIN:(\d+)\]', reply)
+                        pin_match = re.search(r'\[PIN:#?(\d+)\]', reply)
                         if pin_match:
-                            pin_id = pin_match.group(1)
+                            pin_idx = pin_match.group(1)
                             reply = reply.replace(pin_match.group(0), "").strip()
-                            if pin_id in history_msgs:
+                            if pin_idx in history_msgs:
                                 try:
-                                    await history_msgs[pin_id].pin()
+                                    await history_msgs[pin_idx].pin()
                                 except Exception as e:
-                                    print(f"Failed to pin message {pin_id}: {e}")
+                                    print(f"Failed to pin message #{pin_idx}: {e}")
 
                         reply = sanitize_reply(reply, user_id)
                         await send_reply(message, reply)
