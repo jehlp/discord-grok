@@ -23,7 +23,7 @@ DEFINITION = {
 async def handle(ctx, args):
     objective = args.get("objective", "find interesting messages")
     hours_back = max(1, min(720, args.get("hours_back", 24)))
-    max_msgs = max(10, min(500, args.get("max_messages", 200)))
+    max_msgs = max(10, min(200, args.get("max_messages", 100)))
     after_time = datetime.now(timezone.utc) - timedelta(hours=hours_back)
 
     # Fetch channel history
@@ -37,7 +37,7 @@ async def handle(ctx, args):
             continue
         msg_index += 1
         timestamp = msg.created_at.strftime("%Y-%m-%d %H:%M")
-        line = f"[{timestamp}] {msg.author.display_name}: {msg_content[:300]}"
+        line = f"[{timestamp}] {msg.author.display_name}: {msg_content[:150]}"
         history_lines.append(line)
 
     if not history_lines:

@@ -10,7 +10,8 @@ from .context import build_context, get_ambient_context, is_reply_to_bot
 from .helpers import strip_mentions, read_attachments, sanitize_reply, send_reply
 from .tools import TOOLS, ToolContext, dispatch
 
-MAX_TOOL_ROUNDS = 5
+MAX_TOOL_ROUNDS = 3
+MAX_TOOL_RESULT_LEN = 4000  # Truncate tool results to save tokens
 
 
 @bot.event
@@ -168,15 +169,18 @@ async def tool_loop(messages, ctx):
             })
         messages.append(assistant_msg)
 
-        # Execute each tool call and append results
+        # Execute each tool call and append results (truncated to save tokens)
         for tc in choice.message.tool_calls:
             name = tc.function.name
             args = json.loads(tc.function.arguments)
             result = await dispatch(name, ctx, args)
+            result_text = result or "Done."
+            if len(result_text) > MAX_TOOL_RESULT_LEN:
+                result_text = result_text[:MAX_TOOL_RESULT_LEN] + "\n[truncated]"
             messages.append({
                 "role": "tool",
                 "tool_call_id": tc.id,
-                "content": result or "Done.",
+                "content": result_text,
             })
 
     # Hit max rounds -- ask model for a final response without tools
@@ -205,9 +209,9 @@ def build_system_prompt(username, user_notes, referenced_users, rag_context, amb
             system += f"\n- {ref_name}: {ref_notes}"
 
     if rag_context:
-        system += "\n\nRelevant past conversations from this server:"
-        for ctx in rag_context[:5]:
-            system += f"\n- [{ctx['channel']}] {ctx['author']}: {ctx['content'][:200]}"
+        system += "\n\nRelevant past conversations:"
+        for ctx in rag_context[:3]:
+            system += f"\n- {ctx['author']}: {ctx['content'][:120]}"
 
     if ambient:
         system += ambient

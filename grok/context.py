@@ -49,14 +49,14 @@ async def get_ambient_context(channel, user_id: int) -> str:
     """Fetch recent messages from other users for ambient channel awareness."""
     ambient = []
     try:
-        async for msg in channel.history(limit=15):
+        async for msg in channel.history(limit=10):
             if msg.author.bot or msg.author.id == user_id:
                 continue
             content = strip_mentions(msg.content)
             if not content:
                 continue
-            ambient.append(f"- {msg.author.display_name}: {content[:150]}")
-            if len(ambient) >= 5:
+            ambient.append(f"- {msg.author.display_name}: {content[:100]}")
+            if len(ambient) >= 3:
                 break
     except Exception:
         pass

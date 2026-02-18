@@ -3,7 +3,7 @@ import re
 
 from thefuzz import fuzz
 
-from .config import DATA_DIR, MEMORY_FILE, MODEL
+from .config import DATA_DIR, MEMORY_FILE, NOTES_MODEL
 from .clients import xai
 from .api import with_retry
 
@@ -74,15 +74,12 @@ async def update_user_notes(user_id: int, username: str, message: str, memory: d
 
     response = await with_retry(
         xai.chat.completions.create,
-        model=MODEL,
+        model=NOTES_MODEL,
         messages=[{
             "role": "user",
-            "content": f"""Update your notes about {username} based on this message.
-
-Current notes: {current}
-Their message: {message}
-
-Write 2-3 sentences about their interests, personality, and what they care about. If nothing new, return current notes unchanged."""
+            "content": f"""Update notes about {username}. Current: {current}
+Message: {message[:300]}
+Write 2-3 sentences about interests/personality. If nothing new, return current notes unchanged."""
         }],
     )
 
