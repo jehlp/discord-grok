@@ -10,7 +10,6 @@ MAX_CONVERSATION_DEPTH = 5
 IMAGE_RATE_LIMIT_SECONDS = 600
 RAG_RESULTS = 5  # Number of relevant messages to retrieve
 NOTES_MODEL = "grok-3-mini-fast"  # Cheap model for memory updates
-SESSION_TTL_SECONDS = 1800  # 30 minutes
 MAX_ATTACHMENT_SIZE = 100_000  # 100KB max for text files
 ALLOWED_TEXT_EXTENSIONS = {
     ".txt", ".md", ".py", ".js", ".ts", ".json", ".yaml", ".yml", ".toml",

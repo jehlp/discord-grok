@@ -66,8 +66,9 @@ async def handle(ctx, args):
         seconds = remaining % 60
         msg = f"Presentation cooldown — try again in {minutes}m {seconds}s."
         print(f"[create_presentation] RATE LIMITED user {ctx.user_id}: {msg}")
-        ctx.replied = True
-        await ctx.message.reply(msg)
+        if not ctx.replied:
+            ctx.replied = True
+            await ctx.message.reply(msg)
         return msg
 
     script = args.get("script", "")
@@ -103,7 +104,7 @@ async def handle(ctx, args):
             cwd=work_dir,
             preexec_fn=os.setsid,
         )
-        stdout, stderr = await asyncio.wait_for(
+        _, stderr = await asyncio.wait_for(
             proc.communicate(), timeout=TIMEOUT_SECONDS
         )
     except asyncio.TimeoutError:
