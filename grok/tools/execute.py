@@ -15,17 +15,11 @@ DEFINITION = {
     "function": {
         "name": "execute_code",
         "description": (
-            "Build, compile, or generate any file that needs code execution. Use this tool broadly — "
-            "whenever someone wants a program, document, slideshow, spreadsheet, archive, or any "
-            "non-trivial file created. Covers: .jar, .exe, .o, .zip, .tar.gz, .docx, .pptx, .xlsx, "
-            "compiled programs, packaged projects, office documents, etc. "
+            "Build, compile, or generate any file that needs code execution. "
+            "Covers: .jar, .exe, .o, .zip, .tar.gz, .docx, .xlsx, compiled programs, archives, etc. "
+            "For PowerPoints/slides, use create_presentation instead. "
             "Available: Python 3.12, gcc/g++, Java (javac/jar), Node.js, zip/tar, "
-            "python-docx, python-pptx, openpyxl. "
-            "For PowerPoints: use the pre-built Deck helper — `import sys; sys.path.insert(0, '/app'); "
-            "from grok.pptx_template import Deck` — it has add_title_slide, add_section_slide, "
-            "add_content_slide (title + list of prose points), add_two_column_slide, add_quote_slide, "
-            "add_closing_slide. Write insightful prose points, NOT bullet fragments. "
-            "For other office docs: write a Python script using python-docx/openpyxl. "
+            "python-docx, openpyxl. "
             "NOT for heavy computation — refuse resource-hogging requests (huge prime searches, "
             "mining, stress tests, infinite loops). Limited to 30s CPU, 256MB RAM, 50MB disk."
         ),
