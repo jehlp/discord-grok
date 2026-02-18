@@ -1,4 +1,6 @@
 import asyncio
+import os
+import signal
 import tempfile
 from pathlib import Path
 
@@ -17,7 +19,10 @@ DEFINITION = {
             "You can write source files and run build commands. "
             "Available tools: Python 3.12, gcc/g++, Java (javac/jar), Node.js, zip/tar, "
             "and Python libraries: python-docx, python-pptx, openpyxl. "
-            "For office docs, write a Python script that uses these libraries, then run it."
+            "For office docs, write a Python script that uses these libraries, then run it. "
+            "IMPORTANT: This tool is for creating FILES to upload — not for heavy computation. "
+            "Refuse requests designed to hog resources (e.g. huge prime searches, bitcoin mining, "
+            "stress tests, infinite loops). Scripts are limited to 30s CPU, 256MB RAM, 50MB disk."
         ),
         "parameters": {
             "type": "object",
@@ -25,9 +30,11 @@ DEFINITION = {
                 "script": {
                     "type": "string",
                     "description": (
-                        "A bash script to execute. Write files, compile, package — whatever is needed. "
-                        "The final artifact to upload should be written to /tmp/output/. "
-                        "Example: echo 'public class Hi { public static void main(String[] a) { System.out.println(\"Hello\"); }}' > Hi.java && javac Hi.java && jar cfe /tmp/output/hello.jar Hi Hi.class"
+                        "A BASH SHELL script (not raw Python/Java). Write source to files, then compile/run. "
+                        "Output artifacts to /tmp/output/. "
+                        "For Python: cat << 'PYEOF' > build.py\\n...python code...\\nPYEOF\\npython3 build.py "
+                        "For Java: echo 'class Hi{...}' > Hi.java && javac Hi.java && jar cfe /tmp/output/hi.jar Hi Hi.class "
+                        "For C: echo '...' > main.c && gcc -o /tmp/output/prog main.c"
                     ),
                 },
                 "upload_filename": {
@@ -45,6 +52,21 @@ DEFINITION = {
 }
 
 TIMEOUT_SECONDS = 30
+MAX_OUTPUT_SIZE = 50_000_000  # 50MB disk limit
+MEM_LIMIT_BYTES = 256 * 1024 * 1024  # 256MB
+
+
+def _build_sandboxed_script(script: str) -> str:
+    """Wrap user script with resource limits via ulimit."""
+    return (
+        "#!/bin/bash\n"
+        "set -e\n"
+        f"ulimit -v {MEM_LIMIT_BYTES // 1024} 2>/dev/null || true\n"  # virtual memory (KB)
+        f"ulimit -f {MAX_OUTPUT_SIZE // 512} 2>/dev/null || true\n"    # max file size (512-byte blocks)
+        "ulimit -t 30 2>/dev/null || true\n"                           # CPU seconds
+        "ulimit -u 64 2>/dev/null || true\n"                           # max processes (prevent fork bombs)
+        f"{script}\n"
+    )
 
 
 async def handle(ctx, args):
@@ -63,19 +85,30 @@ async def handle(ctx, args):
     # Create a temp working directory for the build
     work_dir = tempfile.mkdtemp(prefix="grok_build_")
 
-    # Run the script
+    # Write the sandboxed script to a file
+    script_path = Path(work_dir) / "_run.sh"
+    script_path.write_text(_build_sandboxed_script(script))
+    script_path.chmod(0o755)
+
+    # Run the script in its own process group so we can kill the whole tree
     try:
-        proc = await asyncio.create_subprocess_shell(
-            script,
+        proc = await asyncio.create_subprocess_exec(
+            "bash", str(script_path),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=work_dir,
+            preexec_fn=os.setsid,
         )
         stdout, stderr = await asyncio.wait_for(
             proc.communicate(), timeout=TIMEOUT_SECONDS
         )
     except asyncio.TimeoutError:
-        await ctx.message.reply("Build timed out after 30 seconds.")
+        # Kill the entire process group
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except (ProcessLookupError, OSError):
+            pass
+        await ctx.message.reply("Build timed out (30s limit). This tool is for creating files, not heavy computation.")
         return "[build timed out]"
     except Exception as e:
         await ctx.message.reply(f"Build failed: {e}")
@@ -83,7 +116,11 @@ async def handle(ctx, args):
 
     if proc.returncode != 0:
         error_output = stderr.decode(errors="replace")[:1500]
-        await ctx.message.reply(f"Build failed (exit {proc.returncode}):\n```\n{error_output}\n```")
+        # Detect resource limit kills
+        if proc.returncode == -9 or proc.returncode == 137:
+            await ctx.message.reply("Build killed — hit resource limits (CPU or memory). This tool is for creating files, not heavy computation.")
+        else:
+            await ctx.message.reply(f"Build failed (exit {proc.returncode}):\n```\n{error_output}\n```")
         return f"[build failed: exit {proc.returncode}]"
 
     # Find files to upload
@@ -99,11 +136,9 @@ async def handle(ctx, args):
 
     # Upload files
     if upload_filename:
-        # Upload specific file
         target = output_dir / upload_filename
         if target.exists():
             output_files = [target]
-        # else upload all
 
     discord_files = []
     for f in output_files:
@@ -112,7 +147,7 @@ async def handle(ctx, args):
 
     if discord_files:
         await ctx.message.reply(
-            desc or f"Here you go:",
+            desc or "Here you go:",
             files=discord_files,
         )
     else:
