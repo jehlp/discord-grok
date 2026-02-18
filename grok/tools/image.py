@@ -44,9 +44,13 @@ async def handle(ctx, args):
         remaining = get_image_cooldown_remaining(ctx.user_id)
         minutes = remaining // 60
         seconds = remaining % 60
-        return f"Rate limited. User must wait {minutes}m {seconds}s before generating another image."
+        msg = f"Image cooldown — try again in {minutes}m {seconds}s."
+        print(f"[generate_image] RATE LIMITED user {ctx.user_id}: {msg}")
+        await ctx.message.reply(msg)
+        return msg
 
     image_url = await gen_image(args.get("prompt", ctx.content))
     await ctx.message.reply(image_url)
     record_image_request(ctx.user_id)
+    print(f"[generate_image] Generated for user {ctx.user_id}")
     return "Image generated and sent to the channel."

@@ -64,7 +64,10 @@ async def handle(ctx, args):
         remaining = PPTX_COOLDOWN_SECONDS - int((now - last).total_seconds())
         minutes = remaining // 60
         seconds = remaining % 60
-        return f"Rate limited. User must wait {minutes}m {seconds}s before creating another presentation."
+        msg = f"Presentation cooldown — try again in {minutes}m {seconds}s."
+        print(f"[create_presentation] RATE LIMITED user {ctx.user_id}: {msg}")
+        await ctx.message.reply(msg)
+        return msg
 
     script = args.get("script", "")
     filename = args.get("filename", "presentation.pptx")

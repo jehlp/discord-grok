@@ -70,7 +70,12 @@ async def handle(ctx, args):
     last = last_execute_request.get(ctx.user_id)
     if last and (now - last) < timedelta(seconds=EXECUTE_COOLDOWN_SECONDS):
         remaining = EXECUTE_COOLDOWN_SECONDS - int((now - last).total_seconds())
-        return f"Rate limited. User must wait {remaining}s before running another build."
+        minutes = remaining // 60
+        seconds = remaining % 60
+        msg = f"Build cooldown — try again in {minutes}m {seconds}s."
+        print(f"[execute_code] RATE LIMITED user {ctx.user_id}: {msg}")
+        await ctx.message.reply(msg)
+        return msg
 
     script = args.get("script", "")
     upload_filename = args.get("upload_filename")
