@@ -21,7 +21,11 @@ DEFINITION = {
             "compiled programs, packaged projects, office documents, etc. "
             "Available: Python 3.12, gcc/g++, Java (javac/jar), Node.js, zip/tar, "
             "python-docx, python-pptx, openpyxl. "
-            "For office docs: write a Python script using these libraries, then run it. "
+            "For PowerPoints: use the pre-built Deck helper — `import sys; sys.path.insert(0, '/app'); "
+            "from grok.pptx_template import Deck` — it has add_title_slide, add_section_slide, "
+            "add_content_slide (title + list of prose points), add_two_column_slide, add_quote_slide, "
+            "add_closing_slide. Write insightful prose points, NOT bullet fragments. "
+            "For other office docs: write a Python script using python-docx/openpyxl. "
             "NOT for heavy computation — refuse resource-hogging requests (huge prime searches, "
             "mining, stress tests, infinite loops). Limited to 30s CPU, 256MB RAM, 50MB disk."
         ),
