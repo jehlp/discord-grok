@@ -87,9 +87,18 @@ async def update_user_notes(user_id: int, username: str, message: str, memory: d
             model=NOTES_MODEL,
             messages=[{
                 "role": "user",
-                "content": f"""Update notes about {username}. Current: {current}
-Message: {message[:300]}
-Write 2-3 sentences about interests/personality. If nothing new, return current notes unchanged."""
+                "content": f"""You are maintaining a brief background profile for {username}.
+
+Current notes: {current}
+
+New message from them: {message[:300]}
+
+Rewrite the notes in 2-3 sentences. Rules:
+- Blend new observations with existing ones; don't let any single trait dominate
+- Downweight or drop traits that seem like a one-off or haven't been reinforced
+- Favour patterns that appear repeatedly over isolated mentions
+- Keep it balanced — multiple facets, not one defining label
+- Write in neutral, factual tone; no hyperbole"""
             }],
         )
 

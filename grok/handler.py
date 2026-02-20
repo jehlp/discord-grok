@@ -210,10 +210,13 @@ def build_system_prompt(username, user_notes, referenced_users, rag_context, amb
     system = SYSTEM_PROMPT
 
     if user_notes:
-        system += f"\n\nWhat you know about {username}: {user_notes}"
+        system += (
+            f"\n\nBackground on {username} (passive context only — "
+            f"do not bring this up unless it's directly relevant to what they said): {user_notes}"
+        )
 
     if referenced_users:
-        system += "\n\nOther people mentioned that you know about:"
+        system += "\n\nBackground on other people mentioned (same rule — passive context, don't force it in):"
         for ref_name, ref_notes in referenced_users.items():
             system += f"\n- {ref_name}: {ref_notes}"
 
