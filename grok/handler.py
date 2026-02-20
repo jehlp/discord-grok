@@ -96,19 +96,27 @@ async def handle_grok_message(message, content, attachments_content, image_urls)
     )
     referenced_users = find_referenced_users(full_conversation_text, memory, exclude_user_id=user_id, mentioned_ids=mentioned_ids)
 
-    # Skip RAG for short casual messages — embedding query is expensive and unhelpful for small talk
-    _casual = len(content.split()) < 8 and "?" not in content and not any(
-        w in content.lower() for w in ("remember", "said", "earlier", "before", "last time", "history", "you said")
+    # Only fetch RAG + ambient when there's a reason to believe past context helps:
+    #   - it's a reply chain (already conversational)
+    #   - message references past events or other users
+    #   - message is long enough to plausibly be asking about server history
+    _past_ref_words = ("remember", "said", "earlier", "before", "last time", "history",
+                       "you said", "what did", "who was", "when did", "what was")
+    _needs_context = (
+        bool(message.reference)                                        # reply chain
+        or any(w in content.lower() for w in _past_ref_words)         # past reference
+        or bool(mentioned_ids)                                         # @mentions other users
+        or len(content.split()) > 15                                   # substantive message
     )
 
     # Run RAG and ambient context in parallel (both are I/O-bound)
-    if _casual:
-        rag_context, ambient = [], ""
-    else:
+    if _needs_context:
         rag_context, ambient = await asyncio.gather(
             asyncio.to_thread(retrieve_relevant_context, content, thread_msg_ids),
             get_ambient_context(message.channel, user_id),
         )
+    else:
+        rag_context, ambient = [], ""
 
     # Build system prompt
     system = build_system_prompt(username, user_notes, referenced_users, rag_context, ambient)
