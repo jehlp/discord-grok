@@ -1,9 +1,56 @@
+import ast
 import re
 
 import aiohttp
 from pathlib import Path
 
 from .config import ALLOWED_TEXT_EXTENSIONS, IMAGE_EXTENSIONS, MAX_ATTACHMENT_SIZE
+
+
+def format_api_error(e: Exception) -> str:
+    """Return a clean, user-facing message for API errors."""
+    raw = str(e)
+
+    # Extract HTTP status code (e.g. "Error code: 403 - ...")
+    code_match = re.search(r"Error code:\s*(\d+)", raw)
+    status = int(code_match.group(1)) if code_match else None
+
+    # Try to pull the body dict that follows the " - "
+    body_str = re.sub(r"^.*?Error code:\s*\d+\s*-\s*", "", raw, count=1)
+    error_detail = None
+    try:
+        body = ast.literal_eval(body_str)
+        error_detail = body.get("error") or body.get("message") or body.get("code")
+    except Exception:
+        pass
+
+    # Map well-known statuses to friendly explanations
+    if status == 403:
+        if error_detail and "content violates" in error_detail.lower():
+            return (
+                "Your request was blocked because the content violates the AI provider's "
+                "usage guidelines. Try rephrasing or removing any policy-violating parts."
+            )
+        return (
+            "Your request was denied — the account or API key doesn't have permission "
+            "to perform this operation. Contact an admin if this is unexpected."
+        )
+    if status == 429:
+        return "Rate limit hit. Too many requests in a short window — wait a moment and try again."
+    if status in (500, 502, 503):
+        return "The AI service is temporarily unavailable or overloaded. Try again in a few seconds."
+    if status == 400:
+        detail = f": {error_detail}" if error_detail else ""
+        return f"Bad request{detail}. The message may be malformed or too long."
+    if status == 401:
+        return "Authentication failed. The API key is invalid or expired — check the bot config."
+
+    # Generic fallback: show status + first line of error detail if available
+    if status and error_detail:
+        return f"API error {status}: {error_detail}"
+    if status:
+        return f"API error {status}. Check the logs for details."
+    return f"Unexpected error: {raw[:200]}"
 
 
 def strip_mentions(text: str) -> str:

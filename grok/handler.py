@@ -7,7 +7,7 @@ from .memory import load_memory, get_user_notes, extract_mentioned_user_ids, fin
 from .rag import store_message, retrieve_relevant_context
 from .api import with_retry
 from .context import build_context, get_ambient_context, is_reply_to_bot
-from .helpers import strip_mentions, read_attachments, sanitize_reply, send_reply
+from .helpers import strip_mentions, read_attachments, sanitize_reply, send_reply, format_api_error
 from .tools import TOOLS, ToolContext, dispatch
 
 MAX_TOOL_ROUNDS = 3
@@ -139,7 +139,7 @@ async def handle_grok_message(message, content, attachments_content, image_urls)
             await tool_loop(messages, ctx)
 
         except Exception as e:
-            await message.reply(f"Something broke: {e}")
+            await message.reply(format_api_error(e))
 
 
 async def tool_loop(messages, ctx):
