@@ -1,3 +1,4 @@
+import asyncio
 import json
 
 from .config import MODEL, SYSTEM_PROMPT
@@ -25,16 +26,17 @@ async def on_message(message):
 
     content = strip_mentions(message.content)
 
-    # Store ALL messages for RAG (even from non-grok channels)
+    # Store ALL messages for RAG — fire and forget, don't block response path
     if content:
         channel_name = getattr(message.channel, "name", "DM")
-        store_message(
+        asyncio.create_task(asyncio.to_thread(
+            store_message,
             message_id=str(message.id),
             content=content,
             author=message.author.display_name,
             channel=channel_name,
             timestamp=message.created_at.isoformat(),
-        )
+        ))
 
     # Only respond in grok channels
     channel_name = getattr(message.channel, "name", "").lower()
@@ -94,11 +96,19 @@ async def handle_grok_message(message, content, attachments_content, image_urls)
     )
     referenced_users = find_referenced_users(full_conversation_text, memory, exclude_user_id=user_id, mentioned_ids=mentioned_ids)
 
-    # Retrieve relevant past messages via RAG
-    rag_context = retrieve_relevant_context(content, exclude_ids=thread_msg_ids)
+    # Skip RAG for short casual messages — embedding query is expensive and unhelpful for small talk
+    _casual = len(content.split()) < 8 and "?" not in content and not any(
+        w in content.lower() for w in ("remember", "said", "earlier", "before", "last time", "history", "you said")
+    )
 
-    # Fetch ambient channel context
-    ambient = await get_ambient_context(message.channel, user_id)
+    # Run RAG and ambient context in parallel (both are I/O-bound)
+    if _casual:
+        rag_context, ambient = [], ""
+    else:
+        rag_context, ambient = await asyncio.gather(
+            asyncio.to_thread(retrieve_relevant_context, content, thread_msg_ids),
+            get_ambient_context(message.channel, user_id),
+        )
 
     # Build system prompt
     system = build_system_prompt(username, user_notes, referenced_users, rag_context, ambient)
@@ -142,7 +152,7 @@ async def tool_loop(messages, ctx):
             if reply and not ctx.replied:
                 reply = sanitize_reply(reply, ctx.user_id)
                 await send_reply(ctx.message, reply)
-            await update_user_notes(ctx.user_id, ctx.username, ctx.content, ctx.memory)
+            asyncio.create_task(update_user_notes(ctx.user_id, ctx.username, ctx.content, ctx.memory))
             return reply
 
         # Append the assistant message with tool calls
@@ -184,7 +194,7 @@ async def tool_loop(messages, ctx):
             await send_reply(ctx.message, reply)
     else:
         reply = None
-    await update_user_notes(ctx.user_id, ctx.username, ctx.content, ctx.memory)
+    asyncio.create_task(update_user_notes(ctx.user_id, ctx.username, ctx.content, ctx.memory))
     return reply
 
 
